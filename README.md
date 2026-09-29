@@ -28,5 +28,6 @@ published here are a derived database and are likewise available under the ODbL.
 python3 build_services.py de lu    # writes site/services/de.json, lu.json
 ```
 
-The GitHub workflow runs every Monday (and on demand), one job per country, and publishes the
-result to GitHub Pages. A country whose build fails keeps its previously published file.
+The GitHub workflow runs daily and rebuilds one country in turn (each country every nine days);
+started by hand it takes a list of countries or `all`. It publishes to GitHub Pages; countries
+not rebuilt, or whose build fails, keep their previously published file.
