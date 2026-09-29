@@ -1,0 +1,57 @@
+name: Service-Verzeichnis bauen
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"   # montags 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  country:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 2          # Overpass schonen
+      matrix:
+        country: [de, at, lu, fr, it, es, pt, uk, mx]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 build_services.py ${{ matrix.country }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: services-${{ matrix.country }}
+          path: site/services/${{ matrix.country }}.json
+
+  publish:
+    needs: country
+    if: always()
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: services-*
+          merge-multiple: true
+      - name: Zusammensetzen (fehlende Länder aus der letzten Veröffentlichung)
+        run: python3 publish.py artifacts site "https://choney34.github.io/nrg-data"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

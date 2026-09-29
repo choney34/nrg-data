@@ -1,0 +1,4 @@
+site/
+artifacts/
+*.log
+__pycache__/

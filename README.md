@@ -1,0 +1,32 @@
+# NRG service directory
+
+Weekly generated list of fuel stations with the services at or within 150 m of them, for the
+[NRG](https://nrg-app.com) fuel price app: food, toilets, shop, EV charging, car wash, air
+(and ATM). Built from OpenStreetMap via the Overpass API; stations inside motorway service
+areas (`highway=services`) count as having toilets and food.
+
+Published at `https://choney34.github.io/nrg-data/services/<country>.json`:
+
+```json
+{"version": 1, "country": "de", "generated": "…", "radius_m": 150,
+ "bits": {"food": 1, "restroom": 2, "atm": 4, "shopping": 8, "evCharger": 16, "carWash": 32, "air": 64},
+ "stations": [[52.43121, 13.10224, 35], …]}
+```
+
+Each station is `[lat, lon, bits]`; only stations with at least one service are listed.
+`services/index.json` lists the countries with their generation time and size.
+
+## Data licence
+
+Data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under
+the [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/). The files
+published here are a derived database and are likewise available under the ODbL.
+
+## Building
+
+```sh
+python3 build_services.py de lu    # writes site/services/de.json, lu.json
+```
+
+The GitHub workflow runs every Monday (and on demand), one job per country, and publishes the
+result to GitHub Pages. A country whose build fails keeps its previously published file.
