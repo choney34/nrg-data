@@ -1,4 +1,8 @@
-# NRG service directory
+# NRG data
+
+Data files for the [NRG](https://nrg-app.com) fuel price app, published on GitHub Pages.
+
+## Service directory
 
 Weekly generated list of fuel stations with the services at or within 150 m of them, for the
 [NRG](https://nrg-app.com) fuel price app: food, toilets, shop, EV charging, car wash, air
@@ -31,3 +35,13 @@ python3 build_services.py de lu    # writes site/services/de.json, lu.json
 The GitHub workflow runs daily and rebuilds one country in turn (each country every nine days);
 started by hand it takes a list of countries or `all`. It publishes to GitHub Pages; countries
 not rebuilt, or whose build fails, keep their previously published file.
+
+## Charging prices
+
+`charging/<region>.json`, rebuilt every six hours from the official AFIR national access points
+(`build_charging.py`). Per charging location: position, operator, address, connectors
+`[[code, kW, count]]`, and the ad-hoc price incl. VAT (€/kWh, session fee, price per hour).
+
+| Region | Source | Terms |
+|---|---|---|
+| Netherlands | DOT-NL by NDW, opendata.ndw.nu | Open data, free for reuse by third parties |

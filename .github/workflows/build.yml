@@ -61,7 +61,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: services-${{ matrix.country }}
-          path: site/services/${{ matrix.country }}.json
+          path: site
 
   publish:
     needs: country
