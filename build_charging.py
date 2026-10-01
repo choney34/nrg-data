@@ -8,6 +8,9 @@ location its position, connectors, maximum power and the ad-hoc price.
 Output: site/charging/<region>.json
 Netherlands: DOT-NL by NDW (opendata.ndw.nu), open data free for reuse by third parties.
 Finland: Fintraffic / digitraffic.fi, CC BY 4.0.
+Poland: EIPA by UDT (eipa.udt.gov.pl), free for commercial and non-commercial use; needs the
+reader key in EIPA_TOKEN (GitHub secret). EIPA_DIR=<folder> reads saved files instead
+(the download limit is 10 per hour for the static files).
 """
 import datetime
 import gzip
@@ -133,18 +136,68 @@ def build_fi():
     return {"source": "Fintraffic / digitraffic.fi, CC BY 4.0", "operators": operators, "locations": rows}
 
 
-REGIONS = {"nl": build_nl, "fi": build_fi}
+# EIPA connector interfaces → CONNECTORS codes
+EIPA_CONNECTORS = {10: 1, 17: 1, 29: 2, 11: 3, 19: 4, 20: 4, 30: 5, 25: 6, 6: 7, 7: 7}
+
+
+def eipa(name):
+    folder = os.environ.get("EIPA_DIR")
+    if folder:
+        return json.load(open(os.path.join(folder, f"{name}.json")))
+    return get(f"https://eipa.udt.gov.pl/reader/export-data/{name}/{os.environ['EIPA_TOKEN']}")
+
+
+def build_pl():
+    operators_by_id = {o["id"]: o.get("short_name") or o.get("name") or "" for o in eipa("operator")["data"]}
+    pools = {p["id"]: p for p in eipa("pool")["data"] if p.get("charging")}
+    station_pool = {s["id"]: s["pool_id"] for s in eipa("station")["data"] if s.get("type") == "E"}
+    prices = {}
+    for d in eipa("dynamic")["data"]:
+        kwh = [float(x["price"]) for x in d.get("prices") or [] if x.get("unit") == "kWh" and x.get("price")]
+        if kwh:
+            prices[d["point_id"]] = min(kwh)
+    groups, best = {}, {}
+    for point in eipa("point")["data"]:
+        pool_id = station_pool.get(point.get("station_id"))
+        if pool_id not in pools:
+            continue
+        for c in point.get("connectors") or []:
+            code = next((EIPA_CONNECTORS[i] for i in c.get("interfaces") or [] if i in EIPA_CONNECTORS), 0)
+            key = (code, round(c.get("power") or 0))
+            groups.setdefault(pool_id, {})[key] = groups.setdefault(pool_id, {}).get(key, 0) + 1
+        if point["id"] in prices:
+            best[pool_id] = min(best.get(pool_id, prices[point["id"]]), prices[point["id"]])
+    operators, op_index, rows = [], {}, []
+    for pool_id, g in groups.items():
+        pool = pools[pool_id]
+        operator = operators_by_id.get(pool.get("operator_id"), "")
+        if operator not in op_index:
+            op_index[operator] = len(operators)
+            operators.append(operator)
+        street = " ".join(x for x in (pool.get("street"), pool.get("house_number")) if x)
+        address = ", ".join(x for x in (street, pool.get("city")) if x)
+        price = best.get(pool_id)
+        rows.append([round(pool["latitude"], 5), round(pool["longitude"], 5), op_index[operator], address,
+                     [[c, kw, n] for (c, kw), n in sorted(g.items())],
+                     None if price is None else round(price, 2), 0, 0])
+    return {"source": "EIPA (UDT), eipa.udt.gov.pl", "currency": "PLN", "operators": operators, "locations": rows}
+
+
+REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl}
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
     for region in sys.argv[1:] or list(REGIONS):
+        if region == "pl" and not (os.environ.get("EIPA_TOKEN") or os.environ.get("EIPA_DIR")):
+            print("== pl: übersprungen, EIPA_TOKEN fehlt")
+            continue
         doc = REGIONS[region]()
         doc = {"version": 1, "region": region,
                "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                "fields": ["lat", "lon", "operator", "address", "connectors[[code,kW,count]]",
                           "kwhPriceInclVAT", "sessionFee", "pricePerHour"],
-               "connectors": CONNECTORS, **doc}
+               "connectors": CONNECTORS, "currency": "EUR", **doc}
         path = os.path.join(OUT, f"{region}.json")
         with open(path, "w") as f:
             json.dump(doc, f, separators=(",", ":"), ensure_ascii=False)

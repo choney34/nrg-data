@@ -46,3 +46,4 @@ not rebuilt, or whose build fails, keep their previously published file.
 |---|---|---|
 | Netherlands | DOT-NL by NDW, opendata.ndw.nu | Open data, free for reuse by third parties |
 | Finland | Fintraffic, afir.digitraffic.fi | CC BY 4.0 – Source: Fintraffic / digitraffic.fi |
+| Poland | EIPA by UDT, eipa.udt.gov.pl (prices in PLN) | Free for commercial and non-commercial use; reader key in the `EIPA_TOKEN` secret |
