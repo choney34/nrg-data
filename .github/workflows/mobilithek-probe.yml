@@ -1,0 +1,39 @@
+name: Mobilithek-Abo testen
+
+# Ruft ein Mobilithek-Abonnement einmal ab und legt die Antwort als Artefakt ab (zum Entwickeln).
+on:
+  workflow_dispatch:
+    inputs:
+      subscription:
+        description: "Abonnement-ID"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Zertifikat vorbereiten
+        env:
+          P12: ${{ secrets.MOBILITHEK_CERT_P12 }}
+          PASS: ${{ secrets.MOBILITHEK_CERT_PASSWORD }}
+        run: |
+          echo "$P12" | base64 -d > cert.p12
+          openssl pkcs12 -in cert.p12 -passin env:PASS -nodes -out cert.pem 2>/dev/null \
+            || openssl pkcs12 -legacy -in cert.p12 -passin env:PASS -nodes -out cert.pem
+          openssl x509 -in cert.pem -noout -subject -enddate
+      - name: Abrufen
+        run: |
+          curl -s --cert cert.pem -H "Accept-Encoding: gzip" -D headers.txt -o body.gz \
+            -w "HTTP %{http_code}, %{size_download} Bytes\n" \
+            "https://mobilithek.info:8443/mobilithek/api/V1.0/subscription?subscriptionID=${{ github.event.inputs.subscription }}"
+          grep -i 'content-type\|last-modified' headers.txt || true
+          (gunzip -c body.gz 2>/dev/null || cat body.gz) > body.txt
+          wc -c body.txt; head -c 1500 body.txt; echo
+          rm -f cert.p12 cert.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mobilithek-${{ github.event.inputs.subscription }}
+          path: body.txt
