@@ -1,9 +1,9 @@
-name: Ladepreise bauen
+name: Ladestandorte Deutschland bauen
 
-# Ladepreise aus den amtlichen AFIR-Zugangspunkten, alle 6 Stunden.
+# Ladesäulenregister der Bundesnetzagentur (monatlich aktualisiert), wöchentlich abgeholt.
 on:
   schedule:
-    - cron: "15 */6 * * *"
+    - cron: "30 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -20,12 +20,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python3 build_charging.py nl fi pl
-        env:
-          EIPA_TOKEN: ${{ secrets.EIPA_TOKEN }}
+      - run: python3 build_charging.py de
       - uses: actions/upload-artifact@v4
         with:
-          name: charging
+          name: charging-de
           path: site
 
   publish:
@@ -44,7 +42,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: charging
+          pattern: charging-de
           merge-multiple: true
       - name: Zusammensetzen (übrige Dateien aus der letzten Veröffentlichung)
         run: python3 publish.py artifacts site "https://choney34.github.io/nrg-data"

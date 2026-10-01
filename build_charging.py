@@ -8,14 +8,18 @@ location its position, connectors, maximum power and the ad-hoc price.
 Output: site/charging/<region>.json
 Netherlands: DOT-NL by NDW (opendata.ndw.nu), open data free for reuse by third parties.
 Finland: Fintraffic / digitraffic.fi, CC BY 4.0.
+Germany: Ladesäulenregister der Bundesnetzagentur (locations, no prices), CC BY 4.0.
 Poland: EIPA by UDT (eipa.udt.gov.pl), free for commercial and non-commercial use; needs the
 reader key in EIPA_TOKEN (GitHub secret). EIPA_DIR=<folder> reads saved files instead
 (the download limit is 10 per hour for the static files).
 """
+import csv
 import datetime
 import gzip
+import io
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -183,7 +187,57 @@ def build_pl():
     return {"source": "EIPA (UDT), eipa.udt.gov.pl", "currency": "PLN", "operators": operators, "locations": rows}
 
 
-REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl}
+BNETZA_PAGE = "https://www.bundesnetzagentur.de/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/DownloadundKontakt.html"
+BNETZA_CONNECTORS = {"AC Typ 2 Steckdose": 1, "AC Typ 2 Fahrzeugkupplung": 1, "DC Fahrzeugkupplung Typ Combo 2 (CCS)": 2,
+                     "DC CHAdeMO": 3, "AC Typ 1 Steckdose": 4, "DC Tesla Fahrzeugkupplung (Typ 2)": 6, "AC Schuko": 7}
+
+
+def build_de():
+    """Ladesäulenregister (monthly CSV, file name carries the date): one row per site and operator."""
+    page = urllib.request.urlopen(urllib.request.Request(BNETZA_PAGE, headers={"User-Agent": USER_AGENT}), timeout=60).read().decode("utf-8", "replace")
+    url = re.search(r'href="(https://data\.bundesnetzagentur\.de/[^"]*Ladesaeulenregister[^"]*\.csv)"', page).group(1)
+    raw = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}), timeout=300).read()
+    rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig")), delimiter=";"))
+    header_at = next(i for i, r in enumerate(rows) if r and r[0] == "Ladeeinrichtungs-ID")
+    idx = {h: i for i, h in enumerate(rows[header_at])}
+    sites = {}
+    for r in rows[header_at + 1:]:
+        if len(r) < len(idx) - 5 or not r[0]:
+            continue
+        try:
+            lat = round(float(r[idx["Breitengrad"]].replace(",", ".")), 5)
+            lon = round(float(r[idx["Längengrad"]].replace(",", ".")), 5)
+        except ValueError:
+            continue
+        operator = (r[idx["Anzeigename (Karte)"]] or r[idx["Betreiber"]]).strip()
+        site = sites.setdefault((lat, lon, operator), {
+            "address": ", ".join(x for x in (" ".join(y for y in (r[idx["Straße"]].strip(), r[idx["Hausnummer"]].strip()) if y),
+                                             r[idx["Ort"]].strip()) if x),
+            "groups": {}})
+        for k in range(1, 7):
+            plugs = r[idx[f"Steckertypen{k}"]] if f"Steckertypen{k}" in idx else ""
+            if not plugs.strip():
+                continue
+            code = next((BNETZA_CONNECTORS[t.strip()] for t in plugs.split(";") if t.strip() in BNETZA_CONNECTORS), 0)
+            try:
+                kw = round(float(r[idx[f"Nennleistung Stecker{k}"]].replace(",", ".") or 0))
+            except ValueError:
+                kw = 0
+            site["groups"][(code, kw)] = site["groups"].get((code, kw), 0) + 1
+    operators, op_index, out = [], {}, []
+    for (lat, lon, operator), site in sites.items():
+        if not site["groups"]:
+            continue
+        if operator not in op_index:
+            op_index[operator] = len(operators)
+            operators.append(operator)
+        out.append([lat, lon, op_index[operator], site["address"],
+                    [[c, kw, n] for (c, kw), n in sorted(site["groups"].items())], None, 0, 0])
+    return {"source": f"Ladesäulenregister der Bundesnetzagentur ({url.rsplit('_', 1)[-1][:-4]}), CC BY 4.0",
+            "operators": operators, "locations": out}
+
+
+REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl, "de": build_de}
 
 
 def main():
