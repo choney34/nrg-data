@@ -11,10 +11,6 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,6 +30,10 @@ jobs:
     needs: build
     if: always()
     runs-on: ubuntu-latest
+    # Only publishing is serialized, so a long build doesn't block the other workflow.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

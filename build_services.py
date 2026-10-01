@@ -22,8 +22,9 @@ import urllib.request
 OVERPASS = os.environ.get("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
 USER_AGENT = "NRG-service-directory/1.0 (https://github.com/choney34/nrg-data)"
 RADIUS_M = 150
-CHUNK_DEG = 2.0
-MIN_CHUNK_DEG = 0.25
+SCAN_DEG = 4.0        # stage 1: where are fuel stations at all (cheap query)
+TILE_DEG = 0.5        # stage 2: services around the stations, only in tiles that have stations
+MIN_CHUNK_DEG = 0.125
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site", "services")
 
 # Bit values shared with the app (StationService.bit).
@@ -54,6 +55,11 @@ nwr["amenity"="fuel"]({bbox})->.f;
 out center tags;
 """
 
+FUEL_QUERY = """[out:json][timeout:180];
+nwr["amenity"="fuel"]({bbox});
+out center;
+"""
+
 # Separate query: combined with the one above, overpass-api.de times out.
 SERVICES_QUERY = """[out:json][timeout:120];
 way["highway"="services"]({bbox});
@@ -70,7 +76,7 @@ def overpass(query):
                 return json.load(resp)
         except urllib.error.HTTPError as e:
             if e.code in (429, 503):          # busy: wait and retry
-                time.sleep(30 * (attempt + 1))
+                time.sleep(15 * (attempt + 1))
                 continue
             if e.code == 504:                 # too big or overloaded: let the caller split
                 return None
@@ -180,21 +186,44 @@ def fetch_chunk(bbox, stations, failed):
     time.sleep(1)
 
 
-def chunks(box):
+def chunks(box, size):
     s, w, n, e = box
     lat = s
     while lat < n:
         lon = w
         while lon < e:
-            yield (lat, lon, min(lat + CHUNK_DEG, n), min(lon + CHUNK_DEG, e))
-            lon += CHUNK_DEG
-        lat += CHUNK_DEG
+            yield (lat, lon, min(lat + size, n), min(lon + size, e))
+            lon += size
+        lat += size
+
+
+def fuel_tiles(box):
+    """Tiles of TILE_DEG that contain fuel stations, from cheap station-only queries."""
+    tiles = set()
+    pending = list(chunks(box, SCAN_DEG))
+    while pending:
+        s, w, n, e = pending.pop()
+        result = overpass(FUEL_QUERY.format(bbox=f"{s},{w},{n},{e}"))
+        if result is None:
+            if n - s > TILE_DEG:
+                ms, mw = (s + n) / 2, (w + e) / 2
+                pending += [(s, w, ms, mw), (s, mw, ms, e), (ms, w, n, mw), (ms, mw, n, e)]
+            else:
+                tiles.add((s, w))   # unknown: query the tile itself later
+            continue
+        for el in result["elements"]:
+            if (p := position(el)):
+                tiles.add((box[0] + (p[0] - box[0]) // TILE_DEG * TILE_DEG,
+                           box[1] + (p[1] - box[1]) // TILE_DEG * TILE_DEG))
+        time.sleep(1)
+    return sorted((round(s, 4), round(w, 4), round(s + TILE_DEG, 4), round(w + TILE_DEG, 4)) for s, w in tiles)
 
 
 def build(country):
     started = time.time()
     stations = {}
-    boxes = [c for box in COUNTRIES[country] for c in chunks(box)]
+    boxes = [t for box in COUNTRIES[country] for t in fuel_tiles(box)]
+    print(f"  {country}: {len(boxes)} Kacheln mit Tankstellen", flush=True)
     failed = []
     for i, box in enumerate(boxes, 1):
         print(f"  {country} {i}/{len(boxes)} {box}", flush=True)
