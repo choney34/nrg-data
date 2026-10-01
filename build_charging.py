@@ -7,6 +7,7 @@ location its position, connectors, maximum power and the ad-hoc price.
 
 Output: site/charging/<region>.json
 Netherlands: DOT-NL by NDW (opendata.ndw.nu), open data free for reuse by third parties.
+Finland: Fintraffic / digitraffic.fi, CC BY 4.0.
 """
 import datetime
 import gzip
@@ -24,10 +25,12 @@ CONNECTORS = {"IEC_62196_T2": 1, "IEC_62196_T2_COMBO": 2, "CHADEMO": 3, "IEC_621
 
 
 def get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Digitraffic-User": USER_AGENT,
+                                               "Accept-Encoding": "gzip"})
     with urllib.request.urlopen(req, timeout=300) as resp:
         data = resp.read()
-    return json.loads(gzip.decompress(data) if url.endswith(".gz") else data)
+        packed = resp.headers.get("Content-Encoding") == "gzip" or url.endswith(".gz")
+    return json.loads(gzip.decompress(data) if packed else data)
 
 
 def ad_hoc_price(tariff, default_vat):
@@ -79,7 +82,58 @@ def build_nl():
     return {"source": "DOT-NL (NDW), opendata.ndw.nu", "operators": operators, "locations": rows}
 
 
-REGIONS = {"nl": build_nl}
+def fi_price(tariff):
+    """(€/kWh, € per session, € per hour) incl. VAT from a Digitraffic tariff (OCPI-like, camelCase)."""
+    included = tariff.get("taxIncluded") == "YES"
+    found = {}
+    for restricted in (False, True):
+        for element in tariff.get("elements") or []:
+            if bool(element.get("restrictions")) != restricted:
+                continue
+            for c in element.get("priceComponents") or []:
+                gross = c["price"] if included else c["price"] * (1 + (c.get("vat") if c.get("vat") is not None else 25.5) / 100)
+                found.setdefault(c["type"], gross)
+        if "ENERGY" in found:
+            break
+    return found.get("ENERGY"), found.get("FLAT", 0.0), found.get("TIME", 0.0)
+
+
+def build_fi():
+    base = "https://afir.digitraffic.fi/api/charging-network/v1/"
+    tariffs = {t["id"]: t for t in get(base + "tariffs?limit=ALL")["tariffs"]}
+    features = get(base + "locations?limit=ALL")["features"]
+    operators, op_index, rows = [], {}, []
+    for f in features:
+        p = f["properties"]
+        lon, lat = f["geometry"]["coordinates"][:2]
+        groups, best = {}, None
+        for evse in p.get("evses") or []:
+            for c in evse.get("connectors") or []:
+                key = (CONNECTORS.get(c.get("standard"), 0), round((c.get("maxElectricPower") or 0) / 1000))
+                groups[key] = groups.get(key, 0) + 1
+                # Ad-hoc tariffs first; untyped ones are the ad-hoc price for most operators.
+                candidates = [tariffs[t] for t in c.get("tariffIds") or [] if t in tariffs]
+                candidates.sort(key=lambda t: t.get("type") != "AD_HOC_PAYMENT")
+                for tariff in candidates[:1]:
+                    energy, flat, time = fi_price(tariff)
+                    if energy is not None and (best is None or energy < best[0]):
+                        best = (energy, flat, time)
+        if not groups:
+            continue
+        operator = ((p.get("operator") or {}).get("details") or {}).get("name") or ""
+        if operator not in op_index:
+            op_index[operator] = len(operators)
+            operators.append(operator)
+        address = p.get("address") or {}
+        street = ", ".join(x for x in (address.get("street"), address.get("city")) if x)
+        energy, flat, time = best or (None, 0, 0)
+        rows.append([round(lat, 5), round(lon, 5), op_index[operator], street,
+                     [[c, kw, n] for (c, kw), n in sorted(groups.items())],
+                     None if energy is None else round(energy, 3), round(flat, 2), round(time, 2)])
+    return {"source": "Fintraffic / digitraffic.fi, CC BY 4.0", "operators": operators, "locations": rows}
+
+
+REGIONS = {"nl": build_nl, "fi": build_fi}
 
 
 def main():

@@ -45,3 +45,4 @@ not rebuilt, or whose build fails, keep their previously published file.
 | Region | Source | Terms |
 |---|---|---|
 | Netherlands | DOT-NL by NDW, opendata.ndw.nu | Open data, free for reuse by third parties |
+| Finland | Fintraffic, afir.digitraffic.fi | CC BY 4.0 – Source: Fintraffic / digitraffic.fi |

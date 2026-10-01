@@ -29,7 +29,7 @@ def fetch(path):
 
 # 1. What was published before (files.json lists it; the first runs had no such list).
 listing = fetch("files.json")
-previous = json.loads(listing) if listing else [f"services/{c}.json" for c in COUNTRIES] + ["charging/nl.json"]
+previous = json.loads(listing) if listing else [f"services/{c}.json" for c in COUNTRIES] + ["charging/nl.json", "charging/fi.json"]
 for path in previous:
     if os.path.exists(os.path.join(src, path)):
         continue
@@ -67,5 +67,5 @@ open(os.path.join(site, "index.html"), "w").write(
     '<!doctype html><meta charset="utf-8"><title>NRG data</title>'
     '<p>Data for the NRG app. Services: © <a href="https://www.openstreetmap.org/copyright">'
     'OpenStreetMap contributors</a>, ODbL (<a href="services/index.json">index</a>). '
-    'Charging: official AFIR national access points, e.g. DOT-NL by NDW '
+    'Charging: official AFIR national access points: DOT-NL by NDW; Fintraffic / digitraffic.fi, CC BY 4.0 '
     '(<a href="charging/index.json">index</a>).</p>\n')
