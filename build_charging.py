@@ -271,7 +271,12 @@ def mobilithek_static():
     [(charging point id, its ad-hoc energyPrice entries)])."""
     sites = []
     for sub in filter(None, os.environ.get("MOBILITHEK_STATIC", "").split(",")):
-        doc = mobilithek(sub.strip()) or {}
+        packet = mobilithek(sub.strip(), raw=True) or b"{}"
+        if packet.lstrip()[:1] == b"<":
+            sites += static_xml(packet)
+            continue
+        doc = json.loads(packet)
+        del packet
         publication = (doc.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication") or {}
         for table in publication.get("energyInfrastructureTable") or []:
             for site in table.get("energyInfrastructureSite") or []:
@@ -342,6 +347,72 @@ def afir_apply(doc):
                                 _timestamp(status.get("lastUpdated"), now),
                                 [u.get("energyPrice") for u in status.get("energyRateUpdate") or []])
     return count
+
+
+def _local(tag):
+    return tag.rsplit("}", 1)[-1]
+
+
+def _child(element, *names):
+    """First descendant along a path of local names."""
+    for name in names:
+        element = next((c for c in element if _local(c.tag) == name), None)
+        if element is None:
+            return None
+    return element
+
+
+def _xml_text(element, *names):
+    found = _child(element, *names)
+    if found is None:
+        return ""
+    value = _child(found, "values", "value")   # multilingual strings
+    return ((value.text if value is not None else found.text) or "").strip()
+
+
+def static_xml(data):
+    """Static sites from providers that deliver DATEX II as XML (e.g. Smartlab); same tuples as
+    the JSON reader. The operator is often only a code there, so the site name stands in for it."""
+    import xml.etree.ElementTree as ET
+    sites = []
+    for site in ET.fromstring(data).iter():
+        if _local(site.tag) != "energyInfrastructureSite":
+            continue
+        reference = _child(site, "locationReference")
+        try:
+            lat = float(_xml_text(reference, "coordinatesForDisplay", "latitude"))
+            lon = float(_xml_text(reference, "coordinatesForDisplay", "longitude"))
+        except (TypeError, ValueError):
+            continue
+        address = _child(reference, "_locationReferenceExtension", "facilityLocation", "address")
+        lines = sorted((c for c in address if _local(c.tag) == "addressLine"), key=lambda c: int(c.get("order") or 0)) if address is not None else []
+        street = " ".join(_xml_text(line, "text") for line in lines).strip()
+        city = _xml_text(address, "city") if address is not None else ""
+        groups, points = {}, []
+        for point in site.iter():
+            if _local(point.tag) != "refillPoint":
+                continue
+            for c in (c for c in point if _local(c.tag) == "connector"):
+                try:
+                    kw = round(float(_xml_text(c, "maxPowerAtSocket") or 0) / 1000)
+                except ValueError:
+                    kw = 0
+                key = (DATEX_CONNECTORS.get(_xml_text(c, "connectorType"), 0), kw)
+                groups[key] = groups.get(key, 0) + 1
+            prices = []
+            for price in (e for e in point.iter() if _local(e.tag) == "energyPrice"):
+                try:
+                    prices.append({"priceType": {"value": _xml_text(price, "priceType")},
+                                   "value": float(_xml_text(price, "value")),
+                                   "taxIncluded": _xml_text(price, "taxIncluded") == "true",
+                                   "taxRate": float(_xml_text(price, "taxRate") or 0)})
+                except ValueError:
+                    pass
+            points.append((point.get("id"), prices))
+        if groups:
+            sites.append((round(lat, 5), round(lon, 5), _xml_text(site, "name") or _xml_text(site, "operator", "name"),
+                          ", ".join(x for x in (street, city) if x), groups, points))
+    return sites
 
 
 def afir_apply_xml(data):
