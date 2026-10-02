@@ -219,7 +219,7 @@ def register_de():
     return _register["doc"]
 
 
-def mobilithek(subscription):
+def mobilithek(subscription, raw=False):
     context = ssl.create_default_context()
     context.load_cert_chain(os.environ["MOBILITHEK_CERT"])
     url = f"https://mobilithek.info:8443/mobilithek/api/v1.0/subscription?subscriptionID={subscription}"
@@ -228,7 +228,8 @@ def mobilithek(subscription):
         if resp.status == 204:   # nothing in the packet buffer
             return None
         data = resp.read()
-    return json.loads(gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data)
+    data = gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data
+    return data if raw else json.loads(data)
 
 
 def text(value):
@@ -303,9 +304,29 @@ def mobilithek_static():
     return sites
 
 
+def _timestamp(value, fallback):
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return fallback
+
+
+def _afir_point(point_id, value, reported, price_updates):
+    """One charging point from a dynamic packet. `reported` is the packet's own time for it, so
+    feeds that stopped updating age out instead of looking current."""
+    if value in AFIR_FREE or value in AFIR_BUSY:
+        known = _afir["status"].get(point_id)
+        if not known or reported >= known[1]:
+            _afir["status"][point_id] = (value in AFIR_FREE, reported)
+    elif value:
+        _afir["status"].pop(point_id, None)
+    for prices in price_updates:
+        _afir["updates"][point_id] = prices
+
+
 def afir_apply(doc):
-    """Takes a dynamic DATEX II packet (pulled, or pushed by the Mobilithek): price updates and
-    the status of each charging point in it."""
+    """Takes a dynamic DATEX II packet in JSON (pulled, or pushed by the Mobilithek): price
+    updates and the status of each charging point in it. Returns the number of points."""
     payloads = (doc.get("messageContainer") or {}).get("payload") or [doc.get("payload") or doc]
     now, count = time.time(), 0
     for payload in payloads:
@@ -317,13 +338,39 @@ def afir_apply(doc):
                     if not point_id:
                         continue
                     count += 1
-                    value = (status.get("status") or {}).get("value")
-                    if value in AFIR_FREE or value in AFIR_BUSY:
-                        _afir["status"][point_id] = (value in AFIR_FREE, now)
-                    elif value:
-                        _afir["status"].pop(point_id, None)
-                    for update in status.get("energyRateUpdate") or []:
-                        _afir["updates"][point_id] = update.get("energyPrice")
+                    _afir_point(point_id, (status.get("status") or {}).get("value"),
+                                _timestamp(status.get("lastUpdated"), now),
+                                [u.get("energyPrice") for u in status.get("energyRateUpdate") or []])
+    return count
+
+
+def afir_apply_xml(data):
+    """The same for providers that deliver DATEX II as XML (e.g. Smartlab)."""
+    import xml.etree.ElementTree as ET
+
+    def local(tag):
+        return tag.rsplit("}", 1)[-1]
+
+    def child_text(element, name):
+        return next((c.text for c in element if local(c.tag) == name), None)
+
+    now, count = time.time(), 0
+    for element in ET.fromstring(data).iter():
+        if local(element.tag) != "refillPointStatus":
+            continue
+        point_id = next((c.get("id") for c in element if local(c.tag) == "reference"), None)
+        if not point_id:
+            continue
+        count += 1
+        updates = []
+        for update in (c for c in element if local(c.tag) == "energyRateUpdate"):
+            updates.append([{
+                "priceType": {"value": child_text(price, "priceType")},
+                "value": float(child_text(price, "value") or 0),
+                "taxIncluded": child_text(price, "taxIncluded") == "true",
+                "taxRate": float(child_text(price, "taxRate") or 0),
+            } for price in update if local(price.tag) == "energyPrice"])
+        _afir_point(point_id, child_text(element, "status"), _timestamp(child_text(element, "lastUpdated"), now), updates)
     return count
 
 
@@ -341,7 +388,9 @@ def mobilithek_updates():
     changes, so pulls miss some; the Mobilithek should push them to the server instead)."""
     for sub in filter(None, os.environ.get("MOBILITHEK_DYNAMIC", "").split(",")):
         try:
-            afir_apply(mobilithek(sub.strip()) or {})
+            packet = mobilithek(sub.strip(), raw=True)
+            if packet:
+                afir_apply_xml(packet) if packet.lstrip()[:1] == b"<" else afir_apply(json.loads(packet))
         except Exception as error:   # dynamic data is an extra
             print(f"   Mobilithek dynamisch {sub}: {error}", file=sys.stderr)
 
