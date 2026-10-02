@@ -120,12 +120,22 @@ def build_fi():
     base = "https://afir.digitraffic.fi/api/charging-network/v1/"
     tariffs = {t["id"]: t for t in get(base + "tariffs?limit=ALL")["tariffs"]}
     features = get(base + "locations?limit=ALL")["features"]
+    try:   # the status is an extra; OCPI values
+        states = {x["evseId"]: x["status"] for x in get(base + "locations/statuses?limit=ALL")["statuses"]}
+    except Exception as error:
+        print(f"   fi Status: {error}", file=sys.stderr)
+        states = {}
+    busy = {"CHARGING", "OUTOFORDER", "INOPERATIVE", "BLOCKED", "RESERVED"}
     operators, op_index, rows = [], {}, []
     for f in features:
         p = f["properties"]
         lon, lat = f["geometry"]["coordinates"][:2]
-        groups, best = {}, None
+        groups, best, free, known = {}, None, 0, 0
         for evse in p.get("evses") or []:
+            state = states.get(evse.get("id"))
+            if state == "AVAILABLE" or state in busy:
+                free += state == "AVAILABLE"
+                known += 1
             for c in evse.get("connectors") or []:
                 key = (CONNECTORS.get(c.get("standard"), 0), round((c.get("maxElectricPower") or 0) / 1000))
                 groups[key] = groups.get(key, 0) + 1
@@ -147,7 +157,8 @@ def build_fi():
         energy, flat, time = best or (None, 0, 0)
         rows.append([round(lat, 5), round(lon, 5), op_index[operator], street,
                      [[c, kw, n] for (c, kw), n in sorted(groups.items())],
-                     None if energy is None else round(energy, 3), round(flat, 2), round(time, 2), None])
+                     None if energy is None else round(energy, 3), round(flat, 2), round(time, 2),
+                     [free, known] if known else None])
     return {"source": "Fintraffic / digitraffic.fi, CC BY 4.0", "operators": operators, "locations": rows}
 
 
