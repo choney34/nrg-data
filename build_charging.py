@@ -274,11 +274,13 @@ def mobilithek_static():
         publication = (doc.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication") or {}
         for table in publication.get("energyInfrastructureTable") or []:
             for site in table.get("energyInfrastructureSite") or []:
-                location = (site.get("locationReference") or {}).get("locAreaLocation") or {}
-                coords = location.get("coordinatesForDisplay") or {}
-                if "latitude" not in coords:
+                # Providers use an area location, a point location or both; the address sits in either.
+                reference = site.get("locationReference") or {}
+                locations = [reference.get(k) or {} for k in ("locAreaLocation", "locPointLocation")]
+                coords = next((l["coordinatesForDisplay"] for l in locations if "latitude" in (l.get("coordinatesForDisplay") or {})), None)
+                if not coords:
                     continue
-                address = ((location.get("locLocationExtensionG") or {}).get("FacilityLocation") or {}).get("address") or {}
+                address = next((a for l in locations if (a := ((l.get("locLocationExtensionG") or {}).get("FacilityLocation") or {}).get("address"))), {})
                 street = " ".join(text(line.get("text")) for line in sorted(address.get("addressLine") or [], key=lambda l: l.get("order", 0)))
                 groups, points = {}, []
                 for station in site.get("energyInfrastructureStation") or []:
