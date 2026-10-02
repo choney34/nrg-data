@@ -29,7 +29,7 @@ def fetch(path):
 
 # 1. What was published before (files.json lists it; the first runs had no such list).
 listing = fetch("files.json")
-previous = json.loads(listing) if listing else [f"services/{c}.json" for c in COUNTRIES] + ["charging/nl.json", "charging/fi.json", "charging/pl.json", "charging/de.json"]
+previous = json.loads(listing) if listing else [f"services/{c}.json" for c in COUNTRIES] + ["charging/nl.json", "charging/fi.json", "charging/pl.json", "charging/de.json", "charging/es.json"]
 for path in previous:
     if os.path.exists(os.path.join(src, path)):
         continue

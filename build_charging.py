@@ -12,6 +12,7 @@ Germany: AFIR data from the Mobilithek (ad-hoc prices; offers licensed "free use
 needs a machine certificate: MOBILITHEK_CERT = PEM file with certificate and key,
 MOBILITHEK_STATIC / MOBILITHEK_DYNAMIC = subscription ids, comma separated), completed with the
 Ladesäulenregister der Bundesnetzagentur (locations without prices, CC BY 4.0).
+Spain: DGT national access point (nap.dgt.es), CC BY; locations without prices.
 Poland: EIPA by UDT (eipa.udt.gov.pl), free for commercial and non-commercial use; needs the
 reader key in EIPA_TOKEN (GitHub secret). EIPA_DIR=<folder> reads saved files instead
 (the download limit is 10 per hour for the static files).
@@ -382,7 +383,7 @@ def _xml_text(element, *names):
 
 def static_xml(data):
     """Static sites from providers that deliver DATEX II as XML (e.g. Smartlab); same tuples as
-    the JSON reader. The operator is often only a code there, so the site name stands in for it."""
+    the JSON reader."""
     import xml.etree.ElementTree as ET
     sites = []
     for site in ET.fromstring(data).iter():
@@ -420,7 +421,11 @@ def static_xml(data):
                     pass
             points.append((point.get("id"), prices))
         if groups:
-            sites.append((round(lat, 5), round(lon, 5), _xml_text(site, "name") or _xml_text(site, "operator", "name"),
+            # Operator by name; where it is only a code ("DESTA"), the site name stands in.
+            operator = _xml_text(site, "operator", "name")
+            if not operator or (operator.isupper() and " " not in operator and len(operator) <= 8):
+                operator = _xml_text(site, "name") or operator
+            sites.append((round(lat, 5), round(lon, 5), operator,
                           ", ".join(x for x in (street, city) if x), groups, points))
     return sites
 
@@ -595,7 +600,33 @@ def build_de_register():
             "operators": operators, "locations": out}
 
 
-REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl, "de": build_de}
+ES_URL = "https://infocar.dgt.es/datex2/v3/miterd/EnergyInfrastructureTablePublication/electrolineras.xml"
+
+
+def build_es():
+    """Spain: national access point of the DGT (nap.dgt.es), DATEX II XML, CC BY. Locations and
+    connectors; the publication carries no prices."""
+    req = urllib.request.Request(ES_URL, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"})
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        data = resp.read()
+    data = gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data
+    operators, op_index, rows = [], {}, []
+    for lat, lon, operator, address, groups, points in merge_sites(static_xml(data)):
+        # "Dirección: Camí dels Reis 166 Municipio: Palma Provincia: …" → "Camí dels Reis 166, Palma"
+        match = re.match(r"Dirección:\s*(.*?)\s*Municipio:\s*(.*?)\s*(?:Provincia:|$)", address)
+        if match:
+            address = ", ".join(x for x in match.groups() if x)
+        if operator not in op_index:
+            op_index[operator] = len(operators)
+            operators.append(operator)
+        prices = [datex_price(p) for _, p in points]
+        best = min((x for x in prices if x[0] is not None), default=(None, 0, 0))
+        rows.append([lat, lon, op_index[operator], address, [[c, kw, n] for (c, kw), n in sorted(groups.items())],
+                     None if best[0] is None else round(best[0], 3), round(best[1], 2), round(best[2], 2), None])
+    return {"source": "DGT, Punto de Acceso Nacional (nap.dgt.es), CC BY", "operators": operators, "locations": rows}
+
+
+REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl, "de": build_de, "es": build_es}
 
 
 def main():
