@@ -286,7 +286,9 @@ def mobilithek_static():
                 coords = next((l["coordinatesForDisplay"] for l in locations if "latitude" in (l.get("coordinatesForDisplay") or {})), None)
                 if not coords:
                     continue
-                address = next((a for l in locations if (a := ((l.get("locLocationExtensionG") or {}).get("FacilityLocation") or {}).get("address"))), {})
+                extensions = [l.get("locLocationExtensionG") or {} for l in locations]
+                address = next((a for x in extensions for key in ("FacilityLocation", "facilityLocation")
+                                if (a := (x.get(key) or {}).get("address"))), {})
                 street = " ".join(text(line.get("text")) for line in sorted(address.get("addressLine") or [], key=lambda l: l.get("order", 0)))
                 groups, points = {}, []
                 for station in site.get("energyInfrastructureStation") or []:
@@ -303,7 +305,12 @@ def mobilithek_static():
                             if (r.get("ratePolicy") or {}).get("value", "adHoc") == "adHoc"
                             for p in r.get("energyPrice") or []]))
                 if groups:
-                    operator = text(((site.get("operator") or {}).get("afacAnOrganisation") or {}).get("name"))
+                    # Operator by name; a legal name where the name is only a code ("DE*EWE"); the
+                    # site name where the provider names no operator for the site.
+                    organisation = (site.get("operator") or {}).get("afacAnOrganisation") or {}
+                    operator = text(organisation.get("name"))
+                    if not operator or "*" in operator:
+                        operator = text(organisation.get("legalName")) or operator or text(site.get("name"))
                     sites.append((round(coords["latitude"], 5), round(coords["longitude"], 5), operator,
                                   ", ".join(x for x in (street.strip(), text(address.get("city"))) if x), groups, points))
     return sites
