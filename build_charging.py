@@ -71,8 +71,11 @@ def build_nl():
     for f in features:
         p = f["properties"]
         lon, lat = f["geometry"]["coordinates"][:2]
-        groups, best = {}, None
+        groups, best, free, known = {}, None, 0, 0
         for a in p.get("availabilities") or []:
+            if a.get("available") is not None:
+                free += a["available"]
+                known += a.get("total") or 0
             code = CONNECTORS.get(a.get("connector_type"), 0)
             kw = round((a.get("power_max") or 0) / 1000)
             key = (code, kw)
@@ -91,7 +94,8 @@ def build_nl():
         energy, flat, time = best or (None, 0, 0)
         rows.append([round(lat, 5), round(lon, 5), op_index[operator], (p.get("address") or "").strip(),
                      [[c, kw, n] for (c, kw), n in sorted(groups.items())],
-                     None if energy is None else round(energy, 3), round(flat, 2), round(time, 2)])
+                     None if energy is None else round(energy, 3), round(flat, 2), round(time, 2),
+                     [free, known] if known else None])
     return {"source": "DOT-NL (NDW), opendata.ndw.nu", "operators": operators, "locations": rows}
 
 
@@ -142,7 +146,7 @@ def build_fi():
         energy, flat, time = best or (None, 0, 0)
         rows.append([round(lat, 5), round(lon, 5), op_index[operator], street,
                      [[c, kw, n] for (c, kw), n in sorted(groups.items())],
-                     None if energy is None else round(energy, 3), round(flat, 2), round(time, 2)])
+                     None if energy is None else round(energy, 3), round(flat, 2), round(time, 2), None])
     return {"source": "Fintraffic / digitraffic.fi, CC BY 4.0", "operators": operators, "locations": rows}
 
 
@@ -161,12 +165,15 @@ def build_pl():
     operators_by_id = {o["id"]: o.get("short_name") or o.get("name") or "" for o in eipa("operator")["data"]}
     pools = {p["id"]: p for p in eipa("pool")["data"] if p.get("charging")}
     station_pool = {s["id"]: s["pool_id"] for s in eipa("station")["data"] if s.get("type") == "E"}
-    prices = {}
+    prices, state = {}, {}
     for d in eipa("dynamic")["data"]:
         kwh = [float(x["price"]) for x in d.get("prices") or [] if x.get("unit") == "kWh" and x.get("price")]
         if kwh:
             prices[d["point_id"]] = min(kwh)
-    groups, best = {}, {}
+        status = d.get("status") or {}
+        if status.get("availability") is not None and status.get("status") is not None:
+            state[d["point_id"]] = status["availability"] == 1 and status["status"] == 1   # operational and free
+    groups, best, avail = {}, {}, {}
     for point in eipa("point")["data"]:
         pool_id = station_pool.get(point.get("station_id"))
         if pool_id not in pools:
@@ -177,6 +184,10 @@ def build_pl():
             groups.setdefault(pool_id, {})[key] = groups.setdefault(pool_id, {}).get(key, 0) + 1
         if point["id"] in prices:
             best[pool_id] = min(best.get(pool_id, prices[point["id"]]), prices[point["id"]])
+        if point["id"] in state:
+            a = avail.setdefault(pool_id, [0, 0])
+            a[0] += state[point["id"]]
+            a[1] += 1
     operators, op_index, rows = [], {}, []
     for pool_id, g in groups.items():
         pool = pools[pool_id]
@@ -189,7 +200,7 @@ def build_pl():
         price = best.get(pool_id)
         rows.append([round(pool["latitude"], 5), round(pool["longitude"], 5), op_index[operator], address,
                      [[c, kw, n] for (c, kw), n in sorted(g.items())],
-                     None if price is None else round(price, 2), 0, 0])
+                     None if price is None else round(price, 2), 0, 0, avail.get(pool_id)])
     return {"source": "EIPA (UDT), eipa.udt.gov.pl", "currency": "PLN", "operators": operators, "locations": rows}
 
 
@@ -246,7 +257,11 @@ def datex_price(energy_prices):
     return found.get("pricePerKWh"), found.get("flatRate", 0.0), found.get("hour", 0.0)
 
 
-_afir = {"at": 0, "sites": None, "updates": {}}
+# Collected across calls and pushes: price updates and the status of each charging point.
+_afir = {"at": 0, "sites": None, "updates": {}, "status": {}}
+AFIR_FREE = {"available"}
+AFIR_BUSY = {"charging", "blocked", "reserved", "occupied", "inoperative", "outOfOrder", "outOfService", "faulted"}
+AFIR_STATUS_MAX_AGE_S = 48 * 3600
 AFIR_STATIC_MAX_AGE_S = int(os.environ.get("MOBILITHEK_STATIC_MAX_AGE_S", 6 * 3600))
 
 
@@ -286,24 +301,47 @@ def mobilithek_static():
     return sites
 
 
+def afir_apply(doc):
+    """Takes a dynamic DATEX II packet (pulled, or pushed by the Mobilithek): price updates and
+    the status of each charging point in it."""
+    payloads = (doc.get("messageContainer") or {}).get("payload") or [doc.get("payload") or doc]
+    now, count = time.time(), 0
+    for payload in payloads:
+        for site in (payload.get("aegiEnergyInfrastructureStatusPublication") or {}).get("energyInfrastructureSiteStatus") or []:
+            for station in site.get("energyInfrastructureStationStatus") or []:
+                for point in station.get("refillPointStatus") or []:
+                    status = point.get("aegiElectricChargingPointStatus") or {}
+                    point_id = (status.get("reference") or {}).get("idG")
+                    if not point_id:
+                        continue
+                    count += 1
+                    value = (status.get("status") or {}).get("value")
+                    if value in AFIR_FREE or value in AFIR_BUSY:
+                        _afir["status"][point_id] = (value in AFIR_FREE, now)
+                    elif value:
+                        _afir["status"].pop(point_id, None)
+                    for update in status.get("energyRateUpdate") or []:
+                        _afir["updates"][point_id] = update.get("energyPrice")
+    return count
+
+
+def afir_state():
+    return {"updates": dict(_afir["updates"]), "status": dict(_afir["status"])}
+
+
+def afir_restore(state):
+    _afir["updates"].update(state.get("updates") or {})
+    _afir["status"].update({k: tuple(v) for k, v in (state.get("status") or {}).items()})
+
+
 def mobilithek_updates():
-    """Price updates per charging point id from the dynamic offers' current packets."""
-    updates = {}
+    """Pulls the dynamic offers' current packets (a fallback: packets only hold the last minute's
+    changes, so pulls miss some; the Mobilithek should push them to the server instead)."""
     for sub in filter(None, os.environ.get("MOBILITHEK_DYNAMIC", "").split(",")):
         try:
-            doc = mobilithek(sub.strip()) or {}
+            afir_apply(mobilithek(sub.strip()) or {})
         except Exception as error:   # dynamic data is an extra
             print(f"   Mobilithek dynamisch {sub}: {error}", file=sys.stderr)
-            continue
-        payloads = (doc.get("messageContainer") or {}).get("payload") or [doc.get("payload") or {}]
-        for payload in payloads:
-            for site in (payload.get("aegiEnergyInfrastructureStatusPublication") or {}).get("energyInfrastructureSiteStatus") or []:
-                for station in site.get("energyInfrastructureStationStatus") or []:
-                    for point in station.get("refillPointStatus") or []:
-                        status = point.get("aegiElectricChargingPointStatus") or {}
-                        for update in status.get("energyRateUpdate") or []:
-                            updates[(status.get("reference") or {}).get("idG")] = update.get("energyPrice")
-    return updates
 
 
 def mobilithek_sites():
@@ -311,16 +349,23 @@ def mobilithek_sites():
     few hours; the small dynamic packets carry only recent changes, so their price updates are
     collected across calls until the next static fetch."""
     if _afir["sites"] is None or time.time() - _afir["at"] > AFIR_STATIC_MAX_AGE_S:
-        _afir.update(at=time.time(), sites=mobilithek_static(), updates={})
-    _afir["updates"].update(mobilithek_updates())
-    updates, result = _afir["updates"], []
+        sites = mobilithek_static()
+        _afir["updates"].clear()   # the fresh static data has the current prices
+        _afir.update(at=time.time(), sites=sites)
+    mobilithek_updates()
+    updates, status, result = _afir["updates"], _afir["status"], []
+    oldest = time.time() - AFIR_STATUS_MAX_AGE_S
     for lat, lon, operator, address, groups, points in _afir["sites"]:
-        best = None
+        best, free, known = None, 0, 0
         for point_id, prices in points:
             energy, flat, hour = datex_price(updates.get(point_id, prices))
             if energy is not None and (best is None or energy < best[0]):
                 best = (energy, flat, hour)
-        result.append((lat, lon, operator, address, groups, best))
+            state = status.get(point_id)
+            if state and state[1] >= oldest:
+                free += state[0]
+                known += 1
+        result.append((lat, lon, operator, address, groups, best, [free, known] if known else None))
     return result
 
 
@@ -338,10 +383,10 @@ def build_de():
             operators.append(name)
         return op_index[name]
 
-    for lat, lon, operator, address, groups, best in sites:
+    for lat, lon, operator, address, groups, best, availability in sites:
         energy, flat, hour = best or (None, 0, 0)
         rows.append([lat, lon, op(operator), address, [[c, kw, n] for (c, kw), n in sorted(groups.items())],
-                     None if energy is None else round(energy, 3), round(flat, 2), round(hour, 2)])
+                     None if energy is None else round(energy, 3), round(flat, 2), round(hour, 2), availability])
         taken.setdefault((int(lat * 1000), int(lon * 1000)), []).append((lat, lon))
     for row in register["locations"]:
         cy, cx = int(row[0] * 1000), int(row[1] * 1000)
@@ -393,7 +438,7 @@ def build_de_register():
             op_index[operator] = len(operators)
             operators.append(operator)
         out.append([lat, lon, op_index[operator], site["address"],
-                    [[c, kw, n] for (c, kw), n in sorted(site["groups"].items())], None, 0, 0])
+                    [[c, kw, n] for (c, kw), n in sorted(site["groups"].items())], None, 0, 0, None])
     return {"source": f"Ladesäulenregister der Bundesnetzagentur ({url.rsplit('_', 1)[-1][:-4]}), CC BY 4.0",
             "operators": operators, "locations": out}
 
@@ -411,7 +456,7 @@ def main():
         doc = {"version": 1, "region": region,
                "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                "fields": ["lat", "lon", "operator", "address", "connectors[[code,kW,count]]",
-                          "kwhPriceInclVAT", "sessionFee", "pricePerHour"],
+                          "kwhPriceInclVAT", "sessionFee", "pricePerHour", "availability[free,known]|null"],
                "connectors": CONNECTORS, "currency": "EUR", **doc}
         path = os.path.join(OUT, f"{region}.json")
         with open(path, "w") as f:
