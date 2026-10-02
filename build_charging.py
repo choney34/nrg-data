@@ -466,12 +466,32 @@ def mobilithek_updates():
             print(f"   Mobilithek dynamisch {sub}: {error}", file=sys.stderr)
 
 
+def merge_sites(sites):
+    """One site per coordinate: some providers list every charging point as its own site, and
+    the same network can come in through two offers. Points already seen are not counted twice."""
+    merged, seen = {}, set()
+    for lat, lon, operator, address, groups, points in sites:
+        fresh = [p for p in points if p[0] not in seen]
+        if points and not fresh:
+            continue
+        seen.update(p[0] for p in fresh)
+        site = merged.get((lat, lon))
+        if site is None:
+            merged[(lat, lon)] = [lat, lon, operator, address, dict(groups), list(fresh)]
+            continue
+        share = len(fresh) / len(points) if points else 1   # only the new points' connectors
+        for key, n in groups.items():
+            site[4][key] = site[4].get(key, 0) + max(1, round(n * share))
+        site[5] += fresh
+    return [tuple(site) for site in merged.values()]
+
+
 def mobilithek_sites():
     """AFIR sites with their cheapest ad-hoc price. The static offers are large and fetched every
     few hours; the small dynamic packets carry only recent changes, so their price updates are
     collected across calls until the next static fetch."""
     if _afir["sites"] is None or time.time() - _afir["at"] > AFIR_STATIC_MAX_AGE_S:
-        sites = mobilithek_static()
+        sites = merge_sites(mobilithek_static())
         _afir["updates"].clear()   # the fresh static data has the current prices
         _afir.update(at=time.time(), sites=sites)
     mobilithek_updates()
