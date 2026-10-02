@@ -283,13 +283,16 @@ def mobilithek_static():
                 # Providers use an area location, a point location or both; the address sits in either.
                 reference = site.get("locationReference") or {}
                 locations = [reference.get(k) or {} for k in ("locAreaLocation", "locPointLocation")]
-                coords = next((l["coordinatesForDisplay"] for l in locations if "latitude" in (l.get("coordinatesForDisplay") or {})), None)
+                coords = next((c for l in locations
+                               for c in (l.get("coordinatesForDisplay"), (l.get("pointByCoordinates") or {}).get("pointCoordinates"))
+                               if c and "latitude" in c), None)
                 if not coords:
                     continue
                 extensions = [l.get("locLocationExtensionG") or {} for l in locations]
                 address = next((a for x in extensions for key in ("FacilityLocation", "facilityLocation")
                                 if (a := (x.get(key) or {}).get("address"))), {})
-                street = " ".join(text(line.get("text")) for line in sorted(address.get("addressLine") or [], key=lambda l: l.get("order", 0)))
+                street = " ".join(text(line.get("text")) for line in sorted(address.get("addressLine") or [], key=lambda l: l.get("order", 0))
+                                  if (line.get("type") or {}).get("value", "street") in ("street", "houseNumber"))
                 groups, points = {}, []
                 for station in site.get("energyInfrastructureStation") or []:
                     for point in station.get("refillPoint") or []:
