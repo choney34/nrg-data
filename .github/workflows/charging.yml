@@ -1,9 +1,9 @@
 name: Ladepreise bauen
 
-# Ladepreise aus den amtlichen AFIR-Zugangspunkten, alle 6 Stunden.
+# Ladepreise aus den amtlichen AFIR-Zugangspunkten, stündlich.
 on:
   schedule:
-    - cron: "15 */6 * * *"
+    - cron: "15 * * * *"
   workflow_dispatch:
 
 permissions:

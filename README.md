@@ -38,7 +38,7 @@ not rebuilt, or whose build fails, keep their previously published file.
 
 ## Charging prices
 
-`charging/<region>.json`, rebuilt every six hours from the official AFIR national access points
+`charging/<region>.json`, rebuilt every hour from the official AFIR national access points
 (`build_charging.py`). Per charging location: position, operator, address, connectors
 `[[code, kW, count]]`, and the ad-hoc price incl. VAT (€/kWh, session fee, price per hour).
 
