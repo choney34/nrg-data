@@ -23,8 +23,8 @@ OVERPASS = os.environ.get("OVERPASS_URL", "https://overpass-api.de/api/interpret
 USER_AGENT = "NRG-service-directory/1.0 (https://github.com/choney34/nrg-data)"
 RADIUS_M = 150
 SCAN_DEG = 4.0        # stage 1: where are fuel stations at all (cheap query)
-TILE_DEG = 0.5        # stage 2: services around the stations, only in tiles that have stations
-MIN_CHUNK_DEG = 0.125
+TILE_DEG = 2.0        # stage 2: services around the stations, only in tiles that have stations (small tiles mean hundreds of requests, which Overpass throttles)
+MIN_CHUNK_DEG = 0.25
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site", "services")
 
 # Bit values shared with the app (StationService.bit).
