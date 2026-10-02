@@ -1,0 +1,19 @@
+name: NRG-Server überwachen
+
+# Prüft api.nrg-app.com von außen. Ein fehlgeschlagener Lauf löst die GitHub-E-Mail
+# "Run failed" aus.
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 monitor.py
