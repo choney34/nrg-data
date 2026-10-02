@@ -246,8 +246,48 @@ def datex_price(energy_prices):
     return found.get("pricePerKWh"), found.get("flatRate", 0.0), found.get("hour", 0.0)
 
 
-def mobilithek_sites():
-    """AFIR sites from all subscribed static offers; ad-hoc prices updated from the dynamic offers."""
+_afir = {"at": 0, "sites": None, "updates": {}}
+AFIR_STATIC_MAX_AGE_S = int(os.environ.get("MOBILITHEK_STATIC_MAX_AGE_S", 6 * 3600))
+
+
+def mobilithek_static():
+    """Sites of all subscribed static offers: (lat, lon, operator, address, connector groups,
+    [(charging point id, its ad-hoc energyPrice entries)])."""
+    sites = []
+    for sub in filter(None, os.environ.get("MOBILITHEK_STATIC", "").split(",")):
+        doc = mobilithek(sub.strip()) or {}
+        publication = (doc.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication") or {}
+        for table in publication.get("energyInfrastructureTable") or []:
+            for site in table.get("energyInfrastructureSite") or []:
+                location = (site.get("locationReference") or {}).get("locAreaLocation") or {}
+                coords = location.get("coordinatesForDisplay") or {}
+                if "latitude" not in coords:
+                    continue
+                address = ((location.get("locLocationExtensionG") or {}).get("FacilityLocation") or {}).get("address") or {}
+                street = " ".join(text(line.get("text")) for line in sorted(address.get("addressLine") or [], key=lambda l: l.get("order", 0)))
+                groups, points = {}, []
+                for station in site.get("energyInfrastructureStation") or []:
+                    for point in station.get("refillPoint") or []:
+                        cp = point.get("aegiElectricChargingPoint")
+                        if not cp:
+                            continue
+                        for c in cp.get("connector") or []:
+                            key = (DATEX_CONNECTORS.get((c.get("connectorType") or {}).get("value"), 0),
+                                   round((c.get("maxPowerAtSocket") or 0) / 1000))
+                            groups[key] = groups.get(key, 0) + 1
+                        points.append((cp.get("idG"), [
+                            p for e in cp.get("electricEnergy") or [] for r in e.get("energyRate") or []
+                            if (r.get("ratePolicy") or {}).get("value", "adHoc") == "adHoc"
+                            for p in r.get("energyPrice") or []]))
+                if groups:
+                    operator = text(((site.get("operator") or {}).get("afacAnOrganisation") or {}).get("name"))
+                    sites.append((round(coords["latitude"], 5), round(coords["longitude"], 5), operator,
+                                  ", ".join(x for x in (street.strip(), text(address.get("city"))) if x), groups, points))
+    return sites
+
+
+def mobilithek_updates():
+    """Price updates per charging point id from the dynamic offers' current packets."""
     updates = {}
     for sub in filter(None, os.environ.get("MOBILITHEK_DYNAMIC", "").split(",")):
         try:
@@ -263,41 +303,25 @@ def mobilithek_sites():
                         status = point.get("aegiElectricChargingPointStatus") or {}
                         for update in status.get("energyRateUpdate") or []:
                             updates[(status.get("reference") or {}).get("idG")] = update.get("energyPrice")
-    sites = []
-    for sub in filter(None, os.environ.get("MOBILITHEK_STATIC", "").split(",")):
-        doc = mobilithek(sub.strip()) or {}
-        publication = (doc.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication") or {}
-        for table in publication.get("energyInfrastructureTable") or []:
-            for site in table.get("energyInfrastructureSite") or []:
-                location = (site.get("locationReference") or {}).get("locAreaLocation") or {}
-                coords = location.get("coordinatesForDisplay") or {}
-                if "latitude" not in coords:
-                    continue
-                address = ((location.get("locLocationExtensionG") or {}).get("FacilityLocation") or {}).get("address") or {}
-                street = " ".join(text(line.get("text")) for line in sorted(address.get("addressLine") or [], key=lambda l: l.get("order", 0)))
-                groups, best = {}, None
-                for station in site.get("energyInfrastructureStation") or []:
-                    for point in station.get("refillPoint") or []:
-                        cp = point.get("aegiElectricChargingPoint")
-                        if not cp:
-                            continue
-                        for c in cp.get("connector") or []:
-                            key = (DATEX_CONNECTORS.get((c.get("connectorType") or {}).get("value"), 0),
-                                   round((c.get("maxPowerAtSocket") or 0) / 1000))
-                            groups[key] = groups.get(key, 0) + 1
-                        prices = updates.get(cp.get("idG"))
-                        if prices is None:
-                            prices = [p for e in cp.get("electricEnergy") or [] for r in e.get("energyRate") or []
-                                      if (r.get("ratePolicy") or {}).get("value", "adHoc") == "adHoc"
-                                      for p in r.get("energyPrice") or []]
-                        energy, flat, hour = datex_price(prices)
-                        if energy is not None and (best is None or energy < best[0]):
-                            best = (energy, flat, hour)
-                if groups:
-                    operator = text(((site.get("operator") or {}).get("afacAnOrganisation") or {}).get("name"))
-                    sites.append((round(coords["latitude"], 5), round(coords["longitude"], 5), operator,
-                                  ", ".join(x for x in (street.strip(), text(address.get("city"))) if x), groups, best))
-    return sites
+    return updates
+
+
+def mobilithek_sites():
+    """AFIR sites with their cheapest ad-hoc price. The static offers are large and fetched every
+    few hours; the small dynamic packets carry only recent changes, so their price updates are
+    collected across calls until the next static fetch."""
+    if _afir["sites"] is None or time.time() - _afir["at"] > AFIR_STATIC_MAX_AGE_S:
+        _afir.update(at=time.time(), sites=mobilithek_static(), updates={})
+    _afir["updates"].update(mobilithek_updates())
+    updates, result = _afir["updates"], []
+    for lat, lon, operator, address, groups, points in _afir["sites"]:
+        best = None
+        for point_id, prices in points:
+            energy, flat, hour = datex_price(updates.get(point_id, prices))
+            if energy is not None and (best is None or energy < best[0]):
+                best = (energy, flat, hour)
+        result.append((lat, lon, operator, address, groups, best))
+    return result
 
 
 def build_de():
