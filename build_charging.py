@@ -330,7 +330,8 @@ def mobilithek_static():
                     # Operator by name; a legal name where the name is only a code ("DE*EWE"); the
                     # site name where the provider names no operator for the site.
                     organisation = next((o for x in [site] + stations
-                                         if (o := (x.get("operator") or {}).get("afacAnOrganisation"))), {})
+                                         for key in ("afacAnOrganisation", "afacReferenceableOrganisation")
+                                         if (o := (x.get("operator") or {}).get(key))), {})
                     operator = text(organisation.get("name"))
                     if not operator or "*" in operator:
                         operator = (text(organisation.get("legalName")) or operator or text(site.get("name"))
