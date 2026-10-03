@@ -294,8 +294,10 @@ def mobilithek_static():
         for table in publication.get("energyInfrastructureTable") or []:
             for site in table.get("energyInfrastructureSite") or []:
                 # Providers use an area location, a point location or both; the address sits in either.
-                reference = site.get("locationReference") or {}
-                locations = [reference.get(k) or {} for k in ("locAreaLocation", "locPointLocation")]
+                # (Some put the location and the operator on the stations instead of the site.)
+                stations = site.get("energyInfrastructureStation") or []
+                references = [site.get("locationReference") or {}] + [st.get("locationReference") or {} for st in stations]
+                locations = [r.get(k) or {} for r in references for k in ("locAreaLocation", "locPointLocation")]
                 coords = next((c for l in locations
                                for c in (l.get("coordinatesForDisplay"), (l.get("pointByCoordinates") or {}).get("pointCoordinates"))
                                if c and "latitude" in c), None)
@@ -323,7 +325,8 @@ def mobilithek_static():
                 if groups:
                     # Operator by name; a legal name where the name is only a code ("DE*EWE"); the
                     # site name where the provider names no operator for the site.
-                    organisation = (site.get("operator") or {}).get("afacAnOrganisation") or {}
+                    organisation = next((o for x in [site] + stations
+                                         if (o := (x.get("operator") or {}).get("afacAnOrganisation"))), {})
                     operator = text(organisation.get("name"))
                     if not operator or "*" in operator:
                         operator = text(organisation.get("legalName")) or operator or text(site.get("name"))
