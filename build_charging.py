@@ -296,8 +296,11 @@ def mobilithek_static():
             continue
         doc = json.loads(packet)
         del packet
-        publication = (doc.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication") or {}
-        for table in publication.get("energyInfrastructureTable") or []:
+        # Usually {"payload": {...}}; some wrap it as {"messageContainer": {"payload": [{...}]}}.
+        payloads = (doc.get("messageContainer") or {}).get("payload") or [doc.get("payload") or {}]
+        tables = [t for payload in payloads
+                  for t in (payload.get("aegiEnergyInfrastructureTablePublication") or {}).get("energyInfrastructureTable") or []]
+        for table in tables:
             for site in table.get("energyInfrastructureSite") or []:
                 # Providers use an area location, a point location or both; the address sits in either.
                 # (Some put the location and the operator on the stations instead of the site.)
