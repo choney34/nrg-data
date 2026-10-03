@@ -562,6 +562,8 @@ def build_de():
         return op_index[name]
 
     for lat, lon, operator, address, groups, best, availability in sites:
+        if not (46 < lat < 56 and 5 < lon < 16):   # missing or wrong coordinates (0/0)
+            continue
         energy, flat, hour = best or (None, 0, 0)
         rows.append([lat, lon, op(operator), address, [[c, kw, n] for (c, kw), n in sorted(groups.items())],
                      None if energy is None else round(energy, 3), round(flat, 2), round(hour, 2), availability])
