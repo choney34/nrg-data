@@ -13,6 +13,7 @@ needs a machine certificate: MOBILITHEK_CERT = PEM file with certificate and key
 MOBILITHEK_STATIC / MOBILITHEK_DYNAMIC = subscription ids, comma separated), completed with the
 Ladesäulenregister der Bundesnetzagentur (locations without prices, CC BY 4.0).
 Spain: DGT national access point (nap.dgt.es), CC BY; locations without prices.
+Austria: E-Control Ladestellenverzeichnis, CC BY 4.0; needs ECONTROL_APIKEY (GitHub secret).
 Poland: EIPA by UDT (eipa.udt.gov.pl), free for commercial and non-commercial use; needs the
 reader key in EIPA_TOKEN (GitHub secret). EIPA_DIR=<folder> reads saved files instead
 (the download limit is 10 per hour for the static files).
@@ -637,7 +638,57 @@ def build_es():
     return {"source": "DGT, Punto de Acceso Nacional (nap.dgt.es), CC BY", "operators": operators, "locations": rows}
 
 
-REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl, "de": build_de, "es": build_es}
+AT_URL = "https://api.e-control.at/charge/1.0/search/stations"
+AT_CONNECTORS = {"TYPE_2_AC": 1, "COMBO2_CCS_DC": 2, "CHADEMO_DC": 3, "TYPE_1_AC": 4, "COMBO1_CCS_DC": 5,
+                 "TESLA_S": 6, "SCHUKO": 7}
+
+
+def build_at():
+    """Austria: Ladestellenverzeichnis of E-Control (ladestellen.at), CC BY 4.0. The key is bound
+    to a domain that must be sent as Referer: ECONTROL_APIKEY, ECONTROL_REFERER. The search
+    returns all stations by distance from a point, 1000 per request."""
+    headers = {"User-Agent": USER_AGENT, "Apikey": os.environ["ECONTROL_APIKEY"],
+               "Referer": os.environ.get("ECONTROL_REFERER", "https://api.nrg-app.com")}
+    stations, start = [], 0
+    while True:
+        url = f"{AT_URL}?latitude=47.6&longitude=13.6&fromIndex={start}&endIndex={start + 999}"
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as resp:
+            page = json.load(resp)
+        stations += page.get("stations") or []
+        start += 1000
+        if start >= page.get("totalResults", 0) or not page.get("stations"):
+            break
+        time.sleep(1)
+    operators, op_index, rows = [], {}, []
+    for st in stations:
+        location = st.get("location") or {}
+        if st.get("status") != "ACTIVE" or location.get("latitude") is None:
+            continue
+        groups, best = {}, None
+        for point in st.get("points") or []:
+            code = next((AT_CONNECTORS[c["consumerName"]] for c in point.get("connectorTypes") or []
+                         if c.get("consumerName") in AT_CONNECTORS), 0)
+            key = (code, round(point.get("energyInKw") or 0))
+            groups[key] = groups.get(key, 0) + 1
+            # 0 ct/kWh without "free of charge" is a time-based tariff, not a free one.
+            energy = 0.0 if point.get("freeOfCharge") else ((point.get("priceInCentPerKwh") or 0) / 100 or None)
+            if energy is not None and (best is None or energy < best[0]):
+                best = (energy, (point.get("startFeeCent") or 0) / 100, (point.get("priceInCentPerMin") or 0) * 60 / 100)
+        if not groups:
+            continue
+        operator = st.get("operatorName") or st.get("contactName") or ""
+        if operator not in op_index:
+            op_index[operator] = len(operators)
+            operators.append(operator)
+        energy, flat, hour = best or (None, 0, 0)
+        rows.append([round(location["latitude"], 5), round(location["longitude"], 5), op_index[operator],
+                     ", ".join(x for x in (st.get("street"), st.get("city")) if x),
+                     [[c, kw, n] for (c, kw), n in sorted(groups.items())],
+                     None if energy is None else round(energy, 3), round(flat, 2), round(hour, 2), None])
+    return {"source": "E-Control Ladestellenverzeichnis (ladestellen.at), CC BY 4.0", "operators": operators, "locations": rows}
+
+
+REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl, "de": build_de, "es": build_es, "at": build_at}
 
 
 def main():
@@ -645,6 +696,9 @@ def main():
     for region in sys.argv[1:] or list(REGIONS):
         if region == "pl" and not (os.environ.get("EIPA_TOKEN") or os.environ.get("EIPA_DIR")):
             print("== pl: übersprungen, EIPA_TOKEN fehlt")
+            continue
+        if region == "at" and not os.environ.get("ECONTROL_APIKEY"):
+            print("== at: übersprungen, ECONTROL_APIKEY fehlt")
             continue
         doc = REGIONS[region]()
         doc = {"version": 1, "region": region,
