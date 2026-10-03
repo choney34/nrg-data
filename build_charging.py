@@ -741,7 +741,22 @@ def build_at():
     return {"source": "E-Control Ladestellenverzeichnis (ladestellen.at), CC BY 4.0", "operators": operators, "locations": rows}
 
 
-REGIONS = {"nl": build_nl, "fi": build_fi, "pl": build_pl, "de": build_de, "es": build_es, "at": build_at}
+def without_unmarked_free(build):
+    """0.00 per kWh without an explicit "free of charge" flag is shown as "no price": operators
+    also enter 0 when they bill differently, and a wrong "free" is worse than a missing price.
+    (Austria's source has such a flag and keeps its free sites.)"""
+    def wrapped():
+        doc = build()
+        for row in doc["locations"]:
+            if row[5] == 0:
+                row[5] = None
+        return doc
+    return wrapped
+
+
+REGIONS = {"nl": without_unmarked_free(build_nl), "fi": without_unmarked_free(build_fi),
+           "pl": without_unmarked_free(build_pl), "de": without_unmarked_free(build_de),
+           "es": build_es, "at": build_at}
 
 
 def main():
