@@ -253,11 +253,20 @@ DATEX_CONNECTORS = {"iec62196T2": 1, "iec62196T2COMBO": 2, "chademo": 3, "iec621
                     "iec62196T1COMBO": 5, "teslaS": 6, "domesticF": 7}
 
 
+MAX_PLAUSIBLE_KWH = 1.25   # € incl. VAT
+
+
+def street_first(street):
+    """"5 Platz der Luftbrücke" → "Platz der Luftbrücke 5" (some providers put the number first)."""
+    match = re.match(r"^(\d+\s?[a-zA-Z]?)\s+(\D.*\D)$", street)
+    return f"{match.group(2)} {match.group(1)}" if match else street
+
+
 def datex_price(energy_prices):
     """(€/kWh, € per session, € per hour) incl. VAT from DATEX II energyPrice entries. Entries
     that only apply for part of the charging time (blocking fees after some hours, sometimes
     written as extra "per kWh" entries with 0 for the time before) are not the charging price."""
-    found = {}
+    found, per_kwh = {}, []
     for p in energy_prices or []:
         if p.get("timeBasedApplicability"):
             continue
@@ -268,8 +277,18 @@ def datex_price(energy_prices):
         kind = (p.get("priceType") or {}).get("value")
         if kind == "pricePerMinute":
             kind, gross = "hour", gross * 60
+        if kind == "pricePerKWh":
+            per_kwh.append(gross)
+            continue
         found[kind] = min(found.get(kind, gross), gross)
-    return found.get("pricePerKWh"), found.get("flatRate", 0.0), found.get("hour", 0.0)
+    # Several "per kWh" entries without any condition: some providers label session or time
+    # fees that way (e.g. 1.60 / 0.412 / 0.16). Take the highest plausible one, so the price
+    # shown is never too low; a single entry is taken as it is.
+    energy = None
+    if per_kwh:
+        plausible = [x for x in per_kwh if x <= MAX_PLAUSIBLE_KWH]
+        energy = per_kwh[0] if len(set(per_kwh)) == 1 else (max(plausible) if plausible else min(per_kwh))
+    return energy, found.get("flatRate", 0.0), found.get("hour", 0.0)
 
 
 # Collected across calls and pushes: price updates and the status of each charging point.
@@ -360,7 +379,7 @@ def mobilithek_static():
                         operator = (text(organisation.get("legalName")) or operator or text(site.get("name"))
                                     or next((text(st.get("name")) for st in stations if text(st.get("name"))), ""))
                     sites.append((round(coords["latitude"], 5), round(coords["longitude"], 5), operator,
-                                  ", ".join(x for x in (street.strip(), text(address.get("city"))) if x), groups, points))
+                                  ", ".join(x for x in (street_first(street.strip()), text(address.get("city"))) if x), groups, points))
     return sites
 
 
