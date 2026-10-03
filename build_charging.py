@@ -785,8 +785,8 @@ def fr_price(text):
 
 
 def fr_static():
-    """Charging points of the consolidated national IRVE file, grouped into stations:
-    {station key: [lat, lon, operator, address, {(connector, kW): count}, best price, [point ids]]}."""
+    """Charging points of the consolidated national IRVE file, grouped into sites:
+    {position: [lat, lon, operator, address, {(connector, kW): count}, best price, [point ids]]}."""
     req = urllib.request.Request(FR_STATIC_URL, headers={"User-Agent": USER_AGENT})
     sites = {}
     with urllib.request.urlopen(req, timeout=600) as resp:
@@ -805,8 +805,9 @@ def fr_static():
                      for k in ("2", "combo_ccs", "chademo", "ef")}
             order = ("combo_ccs", "chademo", "2", "ef") if kw > 22 else ("2", "combo_ccs", "chademo", "ef")
             code = next(({"2": 1, "combo_ccs": 2, "chademo": 3, "ef": 7}[k] for k in order if flags[k]), 0)
-            station = r.get("id_station_itinerance") or ""
-            key = station if len(station) > 5 and not station.lower().startswith("non") else (round(lat, 4), round(lon, 4))
+            # One site per position (about 10 m): many operators publish every charger of a
+            # site as a station of its own, with identical coordinates.
+            key = (round(lat, 4), round(lon, 4))
             site = sites.get(key)
             if site is None:
                 operator = r.get("nom_enseigne") or r.get("nom_operateur") or r.get("nom_amenageur") or ""
@@ -916,9 +917,35 @@ def without_unmarked_free(build):
     return wrapped
 
 
-REGIONS = {"nl": without_unmarked_free(build_nl), "fi": without_unmarked_free(build_fi),
-           "pl": without_unmarked_free(build_pl), "de": without_unmarked_free(build_de),
-           "es": build_es, "at": build_at, "fr": build_fr, "lu": build_lu}
+def one_site_per_position(build):
+    """Rows with identical coordinates become one: connectors and availability are added up, the
+    lowest price wins. The app identifies a site by its position, and sites on the same spot
+    could not be told apart on the map."""
+    def wrapped():
+        doc = build()
+        merged = {}
+        for row in doc["locations"]:
+            site = merged.get((row[0], row[1]))
+            if site is None:
+                merged[(row[0], row[1])] = row
+                continue
+            groups = {(c, kw): n for c, kw, n in site[4]}
+            for c, kw, n in row[4]:
+                groups[(c, kw)] = groups.get((c, kw), 0) + n
+            site[4] = [[c, kw, n] for (c, kw), n in sorted(groups.items())]
+            if row[5] is not None and (site[5] is None or row[5] < site[5]):
+                site[5:8] = row[5:8]
+            if row[8]:
+                site[8] = [a + b for a, b in zip(site[8], row[8])] if site[8] else row[8]
+        doc["locations"] = list(merged.values())
+        return doc
+    return wrapped
+
+
+_REGIONS = {"nl": without_unmarked_free(build_nl), "fi": without_unmarked_free(build_fi),
+            "pl": without_unmarked_free(build_pl), "de": without_unmarked_free(build_de),
+            "es": build_es, "at": build_at, "fr": build_fr, "lu": build_lu}
+REGIONS = {name: one_site_per_position(build) for name, build in _REGIONS.items()}
 
 
 def main():
