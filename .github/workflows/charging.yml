@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python3 build_charging.py nl fi pl es at
+      - run: python3 build_charging.py nl fi pl es at fr
         env:
           EIPA_TOKEN: ${{ secrets.EIPA_TOKEN }}
           ECONTROL_APIKEY: ${{ secrets.ECONTROL_APIKEY }}

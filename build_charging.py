@@ -14,6 +14,8 @@ MOBILITHEK_STATIC / MOBILITHEK_DYNAMIC = subscription ids, comma separated), com
 Ladesäulenregister der Bundesnetzagentur (locations without prices, CC BY 4.0).
 Spain: DGT national access point (nap.dgt.es), CC BY; locations without prices.
 Austria: E-Control Ladestellenverzeichnis, CC BY 4.0; needs ECONTROL_APIKEY (GitHub secret).
+France: consolidated national IRVE base (transport.data.gouv.fr), Licence Ouverte 2.0; prices
+from a free-text field, live status from the national dynamic file.
 Poland: EIPA by UDT (eipa.udt.gov.pl), free for commercial and non-commercial use; needs the
 reader key in EIPA_TOKEN (GitHub secret). EIPA_DIR=<folder> reads saved files instead
 (the download limit is 10 per hour for the static files).
@@ -741,6 +743,128 @@ def build_at():
     return {"source": "E-Control Ladestellenverzeichnis (ladestellen.at), CC BY 4.0", "operators": operators, "locations": rows}
 
 
+FR_STATIC_URL = "https://proxy.transport.data.gouv.fr/resource/consolidation-transport-irve-statique"
+FR_DYNAMIC_URL = "https://proxy.transport.data.gouv.fr/resource/consolidation-nationale-irve-dynamique"
+FR_STATIC_MAX_AGE_S = 24 * 3600
+FR_VAT = 1.2
+_fr_static = {"at": 0, "sites": None}
+
+_FR_NUMBER = r"(\d+(?:[.,]\d+)?)"
+_FR_KWH_EUR = re.compile(_FR_NUMBER + r"\s*(?:€|eur(?:os?)?)\s*(ht\b)?\s*(?:ttc\s*)?(?:/|par|le|du)?\s*kwh", re.I)
+_FR_KWH_CENT = re.compile(_FR_NUMBER + r"\s*(?:cts?|centimes?|c€)\s*(?:/|par|le|du)?\s*kwh", re.I)
+_FR_HOUR = re.compile(_FR_NUMBER + r"\s*€\s*par heure de charge", re.I)
+_FR_MINUTE = re.compile(_FR_NUMBER + r"\s*€\s*(?:/|par)\s*min", re.I)
+
+
+def _fr_gross(value):
+    """Tariff texts generated from roaming tariffs are net of VAT (0.4583 = 0.55 / 1.2,
+    0.30916667 = 0.371 / 1.2): a value that is no whole cent and either becomes one with 20 % VAT
+    or has more than three decimals is taken as net."""
+    def whole(x, unit):
+        return abs(x / unit - round(x / unit)) < 0.06
+    net = not whole(value, 0.01) and (whole(value * FR_VAT, 0.01) or not whole(value, 0.001))
+    return value * FR_VAT if net else value
+
+
+def fr_price(text):
+    """(kWh price incl. VAT or None, price per hour) from the free-text field "tarification".
+    Several kWh prices (day/night, subscribers) → the highest plausible one, as for Germany."""
+    text = (text or "").strip()
+    found = [_fr_gross(float(m.group(1).replace(",", "."))) * (FR_VAT if m.group(2) else 1)
+             for m in _FR_KWH_EUR.finditer(text)]
+    found += [float(m.group(1).replace(",", ".")) / 100 for m in _FR_KWH_CENT.finditer(text)]
+    if not found and re.fullmatch(r"\d[.,]\d+", text):          # bare "0.4583"
+        found = [_fr_gross(float(text.replace(",", ".")))]
+    plausible = [x for x in found if 0.05 <= x <= MAX_PLAUSIBLE_KWH]
+    if not plausible:
+        return None, 0
+    hours = [_fr_gross(float(m.group(1).replace(",", "."))) for m in _FR_HOUR.finditer(text)]
+    hours += [float(m.group(1).replace(",", ".")) * 60 for m in _FR_MINUTE.finditer(text)]
+    return max(plausible), max((h for h in hours if h <= 60), default=0)
+
+
+def fr_static():
+    """Charging points of the consolidated national IRVE file, grouped into stations:
+    {station key: [lat, lon, operator, address, {(connector, kW): count}, best price, [point ids]]}."""
+    req = urllib.request.Request(FR_STATIC_URL, headers={"User-Agent": USER_AGENT})
+    sites = {}
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        for r in csv.DictReader(io.TextIOWrapper(resp, encoding="utf-8", newline="")):
+            if r.get("condition_acces") != "Accès libre":
+                continue
+            try:
+                lat, lon = float(r["consolidated_latitude"]), float(r["consolidated_longitude"])
+                kw = float(r.get("puissance_nominale") or 0)
+            except (KeyError, ValueError):
+                continue
+            if not (41 < lat < 51.5 and -5.5 < lon < 10):     # mainland and Corsica; drops entries abroad
+                continue
+            kw = round(kw / 1000 if kw >= 1000 else kw)       # some operators enter watts
+            flags = {k: (r.get("prise_type_" + k) or "").lower() == "true"
+                     for k in ("2", "combo_ccs", "chademo", "ef")}
+            order = ("combo_ccs", "chademo", "2", "ef") if kw > 22 else ("2", "combo_ccs", "chademo", "ef")
+            code = next(({"2": 1, "combo_ccs": 2, "chademo": 3, "ef": 7}[k] for k in order if flags[k]), 0)
+            station = r.get("id_station_itinerance") or ""
+            key = station if len(station) > 5 and not station.lower().startswith("non") else (round(lat, 4), round(lon, 4))
+            site = sites.get(key)
+            if site is None:
+                operator = r.get("nom_enseigne") or r.get("nom_operateur") or r.get("nom_amenageur") or ""
+                site = sites[key] = [round(lat, 5), round(lon, 5), operator.strip(),
+                                     (r.get("adresse_station") or "").strip(), {}, None, []]
+            site[4][(code, kw)] = site[4].get((code, kw), 0) + 1
+            if (r.get("gratuit") or "").lower() == "true":
+                price = (0.0, 0)
+            else:
+                price = fr_price(r.get("tarification"))
+            if price[0] is not None and (site[5] is None or price[0] < site[5][0]):
+                site[5] = price
+            if r.get("id_pdc_itinerance"):
+                site[6].append(r["id_pdc_itinerance"])
+    return sites
+
+
+def fr_status():
+    """{point id: True (free) / False (busy or out of service)} from the national dynamic file;
+    reports older than AFIR_STATUS_MAX_AGE_S and unknown states are left out."""
+    req = urllib.request.Request(FR_DYNAMIC_URL, headers={"User-Agent": USER_AGENT})
+    now, status = time.time(), {}
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        for r in csv.DictReader(io.TextIOWrapper(resp, encoding="utf-8", newline="")):
+            if now - _timestamp((r.get("horodatage") or "").replace(" ", "T", 1), 0) > AFIR_STATUS_MAX_AGE_S:
+                continue
+            state, occupation = r.get("etat_pdc"), r.get("occupation_pdc")
+            if state == "hors_service" or occupation in ("occupe", "reserve"):
+                status[r["id_pdc_itinerance"]] = False
+            elif state == "en_service" and occupation == "libre":
+                status[r["id_pdc_itinerance"]] = True
+    return status
+
+
+def build_fr():
+    """France: consolidated national IRVE base of transport.data.gouv.fr (static and dynamic),
+    Licence Ouverte 2.0. Prices come from a free-text field and are present for a part of the
+    points only. The static file (120 MB) is kept for a day in a long-running process."""
+    if _fr_static["sites"] is None or time.time() - _fr_static["at"] > FR_STATIC_MAX_AGE_S:
+        _fr_static.update(sites=fr_static(), at=time.time())
+    try:
+        status = fr_status()
+    except Exception as error:                                 # the dynamic file is a beta service
+        print(f"   fr: Belegung nicht geladen ({error})")
+        status = {}
+    operators, op_index, rows = [], {}, []
+    for lat, lon, operator, address, groups, best, points in _fr_static["sites"].values():
+        if operator not in op_index:
+            op_index[operator] = len(operators)
+            operators.append(operator)
+        known = [status[p] for p in points if p in status]
+        energy, hour = best or (None, 0)
+        rows.append([lat, lon, op_index[operator], address, [[c, kw, n] for (c, kw), n in sorted(groups.items())],
+                     None if energy is None else round(energy, 3), 0, round(hour, 2),
+                     [sum(known), len(known)] if known else None])
+    return {"source": "Base nationale des IRVE, transport.data.gouv.fr / data.gouv.fr, Licence Ouverte 2.0",
+            "operators": operators, "locations": rows}
+
+
 def without_unmarked_free(build):
     """0.00 per kWh without an explicit "free of charge" flag is shown as "no price": operators
     also enter 0 when they bill differently, and a wrong "free" is worse than a missing price.
@@ -756,7 +880,7 @@ def without_unmarked_free(build):
 
 REGIONS = {"nl": without_unmarked_free(build_nl), "fi": without_unmarked_free(build_fi),
            "pl": without_unmarked_free(build_pl), "de": without_unmarked_free(build_de),
-           "es": build_es, "at": build_at}
+           "es": build_es, "at": build_at, "fr": build_fr}
 
 
 def main():

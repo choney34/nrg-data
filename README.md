@@ -48,5 +48,6 @@ not rebuilt, or whose build fails, keep their previously published file.
 | Finland | Fintraffic, afir.digitraffic.fi | CC BY 4.0 – Source: Fintraffic / digitraffic.fi |
 | Germany | Ladesäulenregister der Bundesnetzagentur (locations only, weekly) | CC BY 4.0 – Source: Bundesnetzagentur.de |
 | Spain | DGT national access point, nap.dgt.es (locations only) | CC BY – Source: DGT |
+| France | Base nationale des IRVE, transport.data.gouv.fr (prices from a free-text field, live status) | Licence Ouverte 2.0 – Source: data.gouv.fr |
 | Austria | E-Control Ladestellenverzeichnis, ladestellen.at | CC BY 4.0 – Source: E-Control; API key in the `ECONTROL_APIKEY` secret |
 | Poland | EIPA by UDT, eipa.udt.gov.pl (prices in PLN) | Free for commercial and non-commercial use; reader key in the `EIPA_TOKEN` secret |
