@@ -303,7 +303,7 @@ def mobilithek_static():
                 # (Some put the location and the operator on the stations instead of the site.)
                 stations = site.get("energyInfrastructureStation") or []
                 references = [site.get("locationReference") or {}] + [st.get("locationReference") or {} for st in stations]
-                locations = [r.get(k) or {} for r in references for k in ("locAreaLocation", "locPointLocation")]
+                locations = [r.get(k) or {} for r in references for k in ("locAreaLocation", "locPointLocation", "areaLocation", "pointLocation")]
                 coords = next((c for l in locations
                                for c in (l.get("coordinatesForDisplay"), (l.get("pointByCoordinates") or {}).get("pointCoordinates"))
                                if c and "latitude" in c), None)
