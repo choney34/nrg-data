@@ -16,6 +16,7 @@ Spain: DGT national access point (nap.dgt.es), CC BY; locations without prices.
 Austria: E-Control Ladestellenverzeichnis, CC BY 4.0; needs ECONTROL_APIKEY (GitHub secret).
 France: consolidated national IRVE base (transport.data.gouv.fr), Licence Ouverte 2.0; prices
 from a free-text field, live status from the national dynamic file.
+Luxembourg: public Chargy network (data.public.lu), CC0; locations and live status.
 Poland: EIPA by UDT (eipa.udt.gov.pl), free for commercial and non-commercial use; needs the
 reader key in EIPA_TOKEN (GitHub secret). EIPA_DIR=<folder> reads saved files instead
 (the download limit is 10 per hour for the static files).
@@ -865,6 +866,43 @@ def build_fr():
             "operators": operators, "locations": rows}
 
 
+LU_URL = "https://my.chargy.lu/b2bev-external-services/resources/kml?API-KEY=486ac6e4-93b8-4369-9c6a-28f7c4e1a81f"
+
+
+def build_lu():
+    """Luxembourg: the public Chargy network, KML published on data.public.lu (CC0, the key in
+    the address is the public one of the dataset; refreshed every 5 minutes). Locations,
+    connectors and live status, no prices."""
+    import xml.etree.ElementTree as ET
+    req = urllib.request.Request(LU_URL, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        root = ET.fromstring(resp.read())
+    rows = []
+    for mark in (e for e in root.iter() if _local(e.tag) == "Placemark"):
+        try:
+            lon, lat = (float(x) for x in _xml_text(mark, "Point", "coordinates").split(",")[:2])
+        except (AttributeError, ValueError):
+            continue
+        groups, free, known = {}, 0, 0
+        for value in (e for e in mark.iter() if _local(e.tag) == "value"):
+            if not (value.text or "").startswith("{"):
+                continue
+            for c in json.loads(value.text).get("connectors") or []:
+                kw = round(c.get("maxchspeed") or 0)
+                key = (2 if kw > 43 else 1, kw)                 # SuperChargy (DC) is CCS, the rest type 2
+                groups[key] = groups.get(key, 0) + 1
+                state = c.get("description")
+                if state and state != "UNKNOWN":                # CHARGING, OFFLINE, SUSPENDED_EV, FAULT … count as busy
+                    known += 1
+                    free += state == "AVAILABLE"
+        if not groups:
+            continue
+        address = re.sub(r"\s*Luxembourg$", "", (_xml_text(mark, "address") or "").strip())
+        rows.append([round(lat, 5), round(lon, 5), 0, address, [[c, kw, n] for (c, kw), n in sorted(groups.items())],
+                     None, 0, 0, [free, known] if known else None])
+    return {"source": "Chargy, data.public.lu (CC0)", "operators": ["Chargy"], "locations": rows}
+
+
 def without_unmarked_free(build):
     """0.00 per kWh without an explicit "free of charge" flag is shown as "no price": operators
     also enter 0 when they bill differently, and a wrong "free" is worse than a missing price.
@@ -880,19 +918,25 @@ def without_unmarked_free(build):
 
 REGIONS = {"nl": without_unmarked_free(build_nl), "fi": without_unmarked_free(build_fi),
            "pl": without_unmarked_free(build_pl), "de": without_unmarked_free(build_de),
-           "es": build_es, "at": build_at, "fr": build_fr}
+           "es": build_es, "at": build_at, "fr": build_fr, "lu": build_lu}
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    for region in sys.argv[1:] or list(REGIONS):
+    wanted, failed = sys.argv[1:] or list(REGIONS), []
+    for region in wanted:
         if region == "pl" and not (os.environ.get("EIPA_TOKEN") or os.environ.get("EIPA_DIR")):
             print("== pl: übersprungen, EIPA_TOKEN fehlt")
             continue
         if region == "at" and not os.environ.get("ECONTROL_APIKEY"):
             print("== at: übersprungen, ECONTROL_APIKEY fehlt")
             continue
-        doc = REGIONS[region]()
+        try:
+            doc = REGIONS[region]()
+        except Exception as error:      # one source failing must not stop the others
+            print(f"== {region}: fehlgeschlagen ({error})")
+            failed.append(region)
+            continue
         doc = {"version": 1, "region": region,
                "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                "fields": ["lat", "lon", "operator", "address", "connectors[[code,kW,count]]",
@@ -903,6 +947,8 @@ def main():
             json.dump(doc, f, separators=(",", ":"), ensure_ascii=False)
         priced = sum(1 for r in doc["locations"] if r[5] is not None)
         print(f"== {region}: {len(doc['locations'])} Standorte, {priced} mit Preis, {os.path.getsize(path) // 1024} KB")
+    if failed and len(failed) == len(wanted):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
