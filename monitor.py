@@ -9,9 +9,9 @@ import sys
 import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "https://api.nrg-app.com").rstrip("/")
-MAX_AGE_S = {"nl": 3600, "fi": 3600, "pl": 3600, "es": 3 * 3600, "at": 3 * 3600, "fr": 3 * 3600, "lu": 3 * 3600, "de": 1800}   # collectors run every 2 to 15 minutes
+MAX_AGE_S = {"nl": 3600, "fi": 3600, "pl": 3600, "es": 3 * 3600, "at": 3 * 3600, "fr": 3 * 3600, "lu": 3 * 3600, "lt": 3 * 3600, "de": 1800}   # collectors run every 2 to 15 minutes
 MAX_PUSH_AGE_S = 1800
-MIN_LOCATIONS = {"nl": 50_000, "fi": 2_000, "pl": 3_000, "es": 8_000, "at": 8_000, "fr": 30_000, "lu": 300, "de": 60_000}
+MIN_LOCATIONS = {"nl": 50_000, "fi": 2_000, "pl": 3_000, "es": 8_000, "at": 8_000, "fr": 30_000, "lu": 300, "lt": 800, "de": 60_000}
 
 problems = []
 

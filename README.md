@@ -50,5 +50,6 @@ not rebuilt, or whose build fails, keep their previously published file.
 | Spain | DGT national access point, nap.dgt.es (locations only) | CC BY – Source: DGT |
 | France | Base nationale des IRVE, transport.data.gouv.fr (prices from a free-text field, live status) | Licence Ouverte 2.0 – Source: data.gouv.fr |
 | Luxembourg | Chargy network, data.public.lu (locations and live status) | CC0 |
+| Lithuania | AB Via Lietuva, ev.vialietuva.lt (OCPI: prices and live status) | CC BY 4.0 / ODC-BY |
 | Austria | E-Control Ladestellenverzeichnis, ladestellen.at | CC BY 4.0 – Source: E-Control; API key in the `ECONTROL_APIKEY` secret |
 | Poland | EIPA by UDT, eipa.udt.gov.pl (prices in PLN) | Free for commercial and non-commercial use; reader key in the `EIPA_TOKEN` secret |

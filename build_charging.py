@@ -17,6 +17,7 @@ Austria: E-Control Ladestellenverzeichnis, CC BY 4.0; needs ECONTROL_APIKEY (Git
 France: consolidated national IRVE base (transport.data.gouv.fr), Licence Ouverte 2.0; prices
 from a free-text field, live status from the national dynamic file.
 Luxembourg: public Chargy network (data.public.lu), CC0; locations and live status.
+Lithuania: AB Via Lietuva (ev.vialietuva.lt), OCPI, CC BY 4.0 / ODC-BY; prices and live status.
 Poland: EIPA by UDT (eipa.udt.gov.pl), free for commercial and non-commercial use; needs the
 reader key in EIPA_TOKEN (GitHub secret). EIPA_DIR=<folder> reads saved files instead
 (the download limit is 10 per hour for the static files).
@@ -917,6 +918,84 @@ def without_unmarked_free(build):
     return wrapped
 
 
+LT_BASE = "https://ev.vialietuva.lt/ocpi/2.3.0/"
+LT_VAT = 21
+
+
+def lt_price(tariff):
+    """(€/kWh, € per session, € per hour) incl. VAT from an OCPI tariff of the Lithuanian access
+    point. Prices are strings; only tariffs marked tax_included "NO" are net (the others match
+    the price text shown to drivers)."""
+    net = tariff.get("tax_included") == "NO"
+    found = {}
+    for restricted in (False, True):
+        for element in tariff.get("elements") or []:
+            if bool(element.get("restrictions")) != restricted:
+                continue
+            for c in element.get("price_components") or []:
+                try:
+                    price = float(c["price"])
+                    vat = float(c["vat"]) if c.get("vat") is not None else LT_VAT
+                except (KeyError, TypeError, ValueError):
+                    continue
+                found.setdefault(c.get("type"), price * (1 + vat / 100) if net else price)
+        if "ENERGY" in found:
+            break
+    return found.get("ENERGY"), found.get("FLAT", 0.0), found.get("TIME", 0.0)
+
+
+def build_lt():
+    """Lithuania: national access point of AB Via Lietuva (ev.vialietuva.lt), OCPI 2.3.0,
+    CC BY 4.0 / ODC-BY. Locations, tariffs and live status."""
+    def data(doc):
+        return doc.get("data", []) if isinstance(doc, dict) else doc
+    tariffs = {t["id"]: t for t in data(get(LT_BASE + "tariffs?limit=5000"))}
+    locations, offset = {}, 0
+    while offset < 50_000:
+        page = data(get(f"{LT_BASE}locations?offset={offset}&limit=100"))
+        if not page:
+            break
+        for location in page:
+            locations[location["id"]] = location
+        offset += len(page)      # pages hold fewer than the limit; the end is an empty page
+    operators, op_index, rows = [], {}, []
+    for location in locations.values():
+        try:
+            lat = float(location["coordinates"]["latitude"])
+            lon = float(location["coordinates"]["longitude"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        groups, best, free, known = {}, None, 0, 0
+        for evse in location.get("evses") or []:
+            status = evse.get("status")
+            if status == "REMOVED":
+                continue
+            if status and status != "UNKNOWN":
+                known += 1
+                free += status == "AVAILABLE"
+            for connector in evse.get("connectors") or []:
+                key = (CONNECTORS.get(connector.get("standard"), 0), round((connector.get("max_electric_power") or 0) / 1000))
+                groups[key] = groups.get(key, 0) + 1
+                for tid in connector.get("tariff_ids") or []:
+                    if tid in tariffs:
+                        energy, flat, hour = lt_price(tariffs[tid])
+                        if energy is not None and (best is None or energy < best[0]):
+                            best = (energy, flat, hour)
+        if not groups:
+            continue
+        operator = (location.get("operator") or {}).get("name") or location.get("party_id") or ""
+        if operator not in op_index:
+            op_index[operator] = len(operators)
+            operators.append(operator)
+        energy, flat, hour = best or (None, 0, 0)
+        rows.append([round(lat, 5), round(lon, 5), op_index[operator],
+                     ", ".join(x for x in (location.get("address"), location.get("city")) if x),
+                     [[c, kw, n] for (c, kw), n in sorted(groups.items())],
+                     None if energy is None else round(energy, 3), round(flat, 2), round(hour, 2),
+                     [free, known] if known else None])
+    return {"source": "AB Via Lietuva (ev.vialietuva.lt), CC BY 4.0", "operators": operators, "locations": rows}
+
+
 def one_site_per_position(build):
     """Rows with identical coordinates become one: connectors and availability are added up, the
     lowest price wins. The app identifies a site by its position, and sites on the same spot
@@ -944,7 +1023,8 @@ def one_site_per_position(build):
 
 _REGIONS = {"nl": without_unmarked_free(build_nl), "fi": without_unmarked_free(build_fi),
             "pl": without_unmarked_free(build_pl), "de": without_unmarked_free(build_de),
-            "es": build_es, "at": build_at, "fr": build_fr, "lu": build_lu}
+            "es": build_es, "at": build_at, "fr": build_fr, "lu": build_lu,
+            "lt": without_unmarked_free(build_lt)}
 REGIONS = {name: one_site_per_position(build) for name, build in _REGIONS.items()}
 
 
