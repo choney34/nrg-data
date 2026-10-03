@@ -1025,7 +1025,22 @@ _REGIONS = {"nl": without_unmarked_free(build_nl), "fi": without_unmarked_free(b
             "pl": without_unmarked_free(build_pl), "de": without_unmarked_free(build_de),
             "es": build_es, "at": build_at, "fr": build_fr, "lu": build_lu,
             "lt": without_unmarked_free(build_lt)}
-REGIONS = {name: one_site_per_position(build) for name, build in _REGIONS.items()}
+# Country (ISO 3166-1 alpha-2) and short provider name of each region. The app reads both from the
+# server's region list, so a new region shows up without an app update.
+META = {"nl": ("NL", "NDW (DOT-NL)"), "fi": ("FI", "Fintraffic"), "pl": ("PL", "EIPA (UDT)"),
+        "de": ("DE", "Mobilithek · Bundesnetzagentur"), "es": ("ES", "DGT"), "at": ("AT", "E-Control"),
+        "fr": ("FR", "data.gouv.fr (IRVE)"), "lu": ("LU", "Chargy"), "lt": ("LT", "Via Lietuva")}
+
+
+def with_meta(name, build):
+    def wrapped():
+        doc = build()
+        doc["iso"], doc["provider"] = META[name]
+        return doc
+    return wrapped
+
+
+REGIONS = {name: with_meta(name, one_site_per_position(build)) for name, build in _REGIONS.items()}
 
 
 def main():
