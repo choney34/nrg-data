@@ -279,6 +279,12 @@ AFIR_STATUS_MAX_AGE_S = 48 * 3600
 AFIR_STATIC_MAX_AGE_S = int(os.environ.get("MOBILITHEK_STATIC_MAX_AGE_S", 6 * 3600))
 
 
+def ad_hoc_prices(element):
+    return [p for e in element.get("electricEnergy") or [] for r in e.get("energyRate") or []
+            if (r.get("ratePolicy") or {}).get("value", "adHoc") == "adHoc"
+            for p in r.get("energyPrice") or []]
+
+
 def mobilithek_static():
     """Sites of all subscribed static offers: (lat, lon, operator, address, connector groups,
     [(charging point id, its ad-hoc energyPrice entries)])."""
@@ -318,10 +324,8 @@ def mobilithek_static():
                             key = (DATEX_CONNECTORS.get((c.get("connectorType") or {}).get("value"), 0),
                                    round((c.get("maxPowerAtSocket") or 0) / 1000))
                             groups[key] = groups.get(key, 0) + 1
-                        points.append((cp.get("idG"), [
-                            p for e in cp.get("electricEnergy") or [] for r in e.get("energyRate") or []
-                            if (r.get("ratePolicy") or {}).get("value", "adHoc") == "adHoc"
-                            for p in r.get("energyPrice") or []]))
+                        # Rates of the point; some providers give them once for the whole station.
+                        points.append((cp.get("idG"), ad_hoc_prices(cp) or ad_hoc_prices(station)))
                 if groups:
                     # Operator by name; a legal name where the name is only a code ("DE*EWE"); the
                     # site name where the provider names no operator for the site.
@@ -329,7 +333,8 @@ def mobilithek_static():
                                          if (o := (x.get("operator") or {}).get("afacAnOrganisation"))), {})
                     operator = text(organisation.get("name"))
                     if not operator or "*" in operator:
-                        operator = text(organisation.get("legalName")) or operator or text(site.get("name"))
+                        operator = (text(organisation.get("legalName")) or operator or text(site.get("name"))
+                                    or next((text(st.get("name")) for st in stations if text(st.get("name"))), ""))
                     sites.append((round(coords["latitude"], 5), round(coords["longitude"], 5), operator,
                                   ", ".join(x for x in (street.strip(), text(address.get("city"))) if x), groups, points))
     return sites
