@@ -254,18 +254,19 @@ DATEX_CONNECTORS = {"iec62196T2": 1, "iec62196T2COMBO": 2, "chademo": 3, "iec621
 
 
 def datex_price(energy_prices):
-    """(€/kWh, € per session, € per hour) incl. VAT from DATEX II energyPrice entries. Minute
-    prices that only apply after some time (blocking fees) are not a charging price."""
+    """(€/kWh, € per session, € per hour) incl. VAT from DATEX II energyPrice entries. Entries
+    that only apply for part of the charging time (blocking fees after some hours, sometimes
+    written as extra "per kWh" entries with 0 for the time before) are not the charging price."""
     found = {}
     for p in energy_prices or []:
+        if p.get("timeBasedApplicability"):
+            continue
         rate = p.get("taxRate") or 0
         rate = rate * 100 if 0 < rate < 1 else rate
         # Net prices without a tax rate: German VAT (prices to consumers are due incl. VAT).
         gross = p["value"] if p.get("taxIncluded") else p["value"] * (1 + (rate or 19) / 100)
         kind = (p.get("priceType") or {}).get("value")
         if kind == "pricePerMinute":
-            if p.get("timeBasedApplicability"):
-                continue
             kind, gross = "hour", gross * 60
         found[kind] = min(found.get(kind, gross), gross)
     return found.get("pricePerKWh"), found.get("flatRate", 0.0), found.get("hour", 0.0)
@@ -279,10 +280,28 @@ AFIR_STATUS_MAX_AGE_S = 48 * 3600
 AFIR_STATIC_MAX_AGE_S = int(os.environ.get("MOBILITHEK_STATIC_MAX_AGE_S", 6 * 3600))
 
 
+_rates = {}   # energy rates by id within the offer being read, for energyRateByReference
+
+
 def ad_hoc_prices(element):
-    return [p for e in element.get("electricEnergy") or [] for r in e.get("energyRate") or []
-            if (r.get("ratePolicy") or {}).get("value", "adHoc") == "adHoc"
+    rates = [r for e in element.get("electricEnergy") or []
+             for r in (e.get("energyRate") or []) + [_rates.get(ref.get("idG")) or {} for ref in e.get("energyRateByReference") or []]]
+    return [p for r in rates if (r.get("ratePolicy") or {}).get("value", "adHoc") == "adHoc"
             for p in r.get("energyPrice") or []]
+
+
+def collect_rates(tables):
+    """A rate may be written out at one charging point and only referenced at the others."""
+    _rates.clear()
+    for table in tables:
+        for site in table.get("energyInfrastructureSite") or []:
+            for station in site.get("energyInfrastructureStation") or []:
+                holders = [station] + [p.get("aegiElectricChargingPoint") or {} for p in station.get("refillPoint") or []]
+                for holder in holders:
+                    for e in holder.get("electricEnergy") or []:
+                        for rate in e.get("energyRate") or []:
+                            if rate.get("idG"):
+                                _rates[rate["idG"]] = rate
 
 
 def mobilithek_static():
@@ -300,6 +319,7 @@ def mobilithek_static():
         payloads = (doc.get("messageContainer") or {}).get("payload") or [doc.get("payload") or {}]
         tables = [t for payload in payloads
                   for t in (payload.get("aegiEnergyInfrastructureTablePublication") or {}).get("energyInfrastructureTable") or []]
+        collect_rates(tables)
         for table in tables:
             for site in table.get("energyInfrastructureSite") or []:
                 # Providers use an area location, a point location or both; the address sits in either.
